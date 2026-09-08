@@ -63,3 +63,28 @@ npm run build
   `localStorage`, Textvermessung über Canvas (`src/tree/`)
 - PDF-Export als Vektorgrafik mit jsPDF + svg2pdf.js, erst beim ersten Klick
   nachgeladen (`src/export/pdf.ts`)
+
+## Deployment
+
+```bash
+npm install
+npm run build
+```
+
+Anschließend den **Inhalt** von `dist/` (also `index.html`, `favicon.svg` und
+den Ordner `assets/`) ins Web-Verzeichnis des Webspace kopieren. Es wird kein
+Node, kein PHP und keine Datenbank auf dem Server gebraucht – die App läuft
+komplett im Browser.
+
+Der Build verwendet `base: './'`, erzeugt also relative Pfade. Dadurch
+funktioniert er sowohl direkt unter der Domain als auch in einem
+Unterverzeichnis (`https://example.com/stammbaum/`).
+
+Nach einem erneuten Upload heißen die Dateien in `assets/` wegen des
+Inhalts-Hashes anders als vorher. Falls dann `404`-Fehler für
+`index-….js`/`index-….css` auftauchen, hält der Browser noch die alte
+`index.html` im Cache – ein Reload mit Strg+F5 räumt das auf. Alte Dateien in
+`assets/` können nach dem Upload gelöscht werden.
+
+`dist/index.html` lässt sich nicht per Doppelklick öffnen: Browser blockieren
+ES-Module über `file://`. Zum lokalen Ansehen `npm run preview` benutzen.
