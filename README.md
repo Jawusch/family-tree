@@ -17,6 +17,12 @@ auf einer eigenen Zeile, fette Namen, automatische Kachelbreite (mit Min-/
 Max-Grenze), Schriftgröße sowie Hintergrund- und Textfarbe für männliche und
 weibliche Einträge. Die Einstellungen bleiben lokal gespeichert.
 
+Beim ersten Öffnen startet die App mit einem mitgelieferten Beispiel-
+Stammbaum (`src/assets/beispiel-stammbaum.ged`), damit sofort etwas zu sehen
+ist. Namen, Orte und exakte Daten darin sind erfunden; nur Struktur und
+Geburtsjahre stammen aus einem echten Baum. Über `Andere Datei importieren`
+lädt man die eigene Datei, ein bereits gespeicherter Stand hat immer Vorrang.
+
 Läuft komplett im Browser: Die GEDCOM-Datei wird lokal geparst, nichts wird
 an einen Server geschickt. Der zuletzt importierte (und ggf. bearbeitete)
 Datensatz wird per IndexedDB im Browser gespeichert, damit er beim nächsten

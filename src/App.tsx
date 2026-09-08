@@ -10,6 +10,7 @@ import { TreeGraph } from './components/TreeGraph';
 import { PersonListTable } from './components/PersonListTable';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { SettingsPanel } from './components/SettingsPanel';
+import { loadStarterGedcom, STARTER_FILE_NAME } from './gedcom/starter';
 import { loadGedcom, saveGedcom, clearGedcom } from './storage/localStore';
 import { downloadTextFile } from './utils/download';
 import { loadSettings, saveSettings, type TreeSettings } from './tree/settings';
@@ -35,23 +36,59 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
 
-  useEffect(() => {
-    loadGedcom().then((stored) => {
-      if (stored) {
-        try {
-          setData(deserializeGedcom(stored));
-          setFileName(stored.fileName);
-        } catch {
-          // ignore corrupt cache, user can just re-import
-        }
-      }
-      setRestoring(false);
-    });
-  }, []);
-
   const persist = (nextData: GedcomData, name: string) => {
     void saveGedcom(serializeGedcom(nextData, name, new Date().toISOString()));
   };
+
+  const applyGedcom = (text: string, name: string): boolean => {
+    const parsed = parseGedcom(text, name);
+    if (parsed.individuals.size === 0) return false;
+    setError(undefined);
+    setData(parsed);
+    setFileName(name);
+    setSelectedIds(new Set());
+    persist(parsed, name);
+    return true;
+  };
+
+  const importStarter = async () => {
+    try {
+      return applyGedcom(await loadStarterGedcom(), STARTER_FILE_NAME);
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    loadGedcom()
+      .then(async (stored) => {
+        if (cancelled) return;
+        if (stored) {
+          try {
+            setData(deserializeGedcom(stored));
+            setFileName(stored.fileName);
+            return;
+          } catch {
+            // Corrupt cache - fall through to the bundled tree.
+          }
+        }
+        // Nothing usable stored yet (first visit): start with the GEDCOM
+        // file that ships with the app instead of an empty import screen.
+        // A failure here is not worth an error message - the import screen
+        // is a perfectly good fallback.
+        if (!cancelled) await importStarter();
+      })
+      .finally(() => {
+        if (!cancelled) setRestoring(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Runs once on mount: a later "Andere Datei importieren" must land on
+    // the import screen, not pull the bundled tree back in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateSettings = (next: TreeSettings) => {
     setSettings(next);
@@ -60,19 +97,18 @@ function App() {
 
   const handleFileText = (text: string, name: string) => {
     try {
-      const parsed = parseGedcom(text, name);
-      if (parsed.individuals.size === 0) {
+      if (!applyGedcom(text, name)) {
         setError('Keine Personen in dieser Datei gefunden. Ist es eine gültige GEDCOM-Datei (.ged)?');
-        return;
       }
-      setError(undefined);
-      setData(parsed);
-      setFileName(name);
-      setSelectedIds(new Set());
-      persist(parsed, name);
     } catch {
       setError('Die Datei konnte nicht gelesen werden. Bitte prüfe, ob es sich um eine gültige GEDCOM-Datei handelt.');
     }
+  };
+
+  const handleLoadStarter = () => {
+    void importStarter().then((ok) => {
+      if (!ok) setError('Der mitgelieferte Beispiel-Stammbaum konnte nicht geladen werden.');
+    });
   };
 
   const visuals = useMemo(() => (data ? buildTileVisuals(data, settings) : null), [data, settings]);
@@ -145,7 +181,14 @@ function App() {
   }
 
   if (!data || !layout || !visuals) {
-    return <ImportScreen onFileText={handleFileText} errorMessage={error} />;
+    return (
+      <ImportScreen
+        onFileText={handleFileText}
+        onLoadStarter={handleLoadStarter}
+        starterName={STARTER_FILE_NAME}
+        errorMessage={error}
+      />
+    );
   }
 
   return (

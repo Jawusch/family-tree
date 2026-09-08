@@ -2,10 +2,13 @@ import { useCallback, useRef, useState } from 'react';
 
 interface ImportScreenProps {
   onFileText: (text: string, fileName: string) => void;
+  /** Loads the GEDCOM file bundled with the app. */
+  onLoadStarter: () => void;
+  starterName: string;
   errorMessage?: string;
 }
 
-export function ImportScreen({ onFileText, errorMessage }: ImportScreenProps) {
+export function ImportScreen({ onFileText, onLoadStarter, starterName, errorMessage }: ImportScreenProps) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -65,6 +68,13 @@ export function ImportScreen({ onFileText, errorMessage }: ImportScreenProps) {
             e.target.value = '';
           }}
         />
+
+        <p className="import-alt">
+          oder{' '}
+          <button type="button" className="link-button" onClick={onLoadStarter}>
+            mitgelieferten Stammbaum ({starterName}) laden
+          </button>
+        </p>
 
         {errorMessage && <p className="error-text">{errorMessage}</p>}
       </div>
