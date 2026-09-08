@@ -532,6 +532,12 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     spans.push({ famId: fam.id, row: h.generation, start: Math.min(hc, wc), end: Math.max(hc, wc) });
   }
 
+  const tilesInRow = new Map<number, TilePosition[]>();
+  for (const tile of tiles.values()) {
+    if (!tilesInRow.has(tile.generation)) tilesInRow.set(tile.generation, []);
+    tilesInRow.get(tile.generation)!.push(tile);
+  }
+
   const laneOf = new Map<string, number>();
   const laneStepInRow = new Map<number, number>();
   const spansByRow = new Map<number, MarriageSpan[]>();
@@ -582,22 +588,43 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
       dropY = y;
 
-      // Hang the children from the point on the marriage line that
-      // actually sits over them. For a couple side by side that's the
-      // midpoint between them (their children are centred underneath);
-      // when a remarriage put one partner further along the row with
-      // their child directly below, it's that parent's own position - so
-      // the line drops straight down out of that parent's tile instead of
-      // running back across the other marriage's children.
+      // Hang the children from the point on the marriage line that sits
+      // over them - for a couple side by side that's the gap between the
+      // two of them (their children are centred underneath anyway).
       const childCenters = childPositions.map((c) => c.x + TILE_WIDTH / 2);
       const overChildren = childCenters.length
         ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
         : (leftCx + rightCx) / 2;
-      dropX = Math.min(Math.max(overChildren, leftCx), rightCx);
+      let drop = Math.min(Math.max(overChildren, leftCx), rightCx);
+
+      // A line going down has to branch off a *visible* piece of the
+      // marriage line, never straight out of someone's tile - the
+      // downward line stands for "children of this couple", so it has to
+      // be seen leaving the connection between them. Where the point over
+      // the children falls behind a tile (a remarriage puts the children
+      // right under one partner), step into the gap beside that tile,
+      // towards the rest of the line.
+      const blocking = (tilesInRow.get(leftPos.generation) ?? []).find(
+        (t) => drop > t.x - 0.5 && drop < t.x + TILE_WIDTH + 0.5,
+      );
+      if (blocking) {
+        const inGapLeft = blocking.x - COL_GAP / 2;
+        const inGapRight = blocking.x + TILE_WIDTH + COL_GAP / 2;
+        const fits = (x: number) => x >= leftCx - 0.5 && x <= rightCx + 0.5;
+        // Prefer the gap on the side the rest of the line runs off to.
+        const preferLeft = drop - leftCx > rightCx - drop;
+        const first = preferLeft ? inGapLeft : inGapRight;
+        const second = preferLeft ? inGapRight : inGapLeft;
+        if (fits(first)) drop = first;
+        else if (fits(second)) drop = second;
+      }
+      dropX = drop;
     } else if (husbPos || wifePos) {
+      // A lone parent has no marriage line to branch off, so the line
+      // starts at the bottom edge of their tile.
       const p = (husbPos ?? wifePos)!;
       dropX = p.x + TILE_WIDTH / 2;
-      dropY = p.y + TILE_HEIGHT / 2;
+      dropY = p.y + TILE_HEIGHT;
     }
 
     let path: string | undefined;

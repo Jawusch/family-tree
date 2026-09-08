@@ -86,11 +86,16 @@ export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGra
   );
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!dragState.current) return;
-    const dx = e.clientX - dragState.current.startX;
-    const dy = e.clientY - dragState.current.startY;
+    const drag = dragState.current;
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
     if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) didDrag.current = true;
-    setTransform((t) => ({ ...t, x: dragState.current!.origX + dx, y: dragState.current!.origY + dy }));
+    // Read the drag origin here rather than inside the updater: React can
+    // run the updater again later (e.g. re-rendering in StrictMode), by
+    // which time the drag has ended and the ref is back to null.
+    const { origX, origY } = drag;
+    setTransform((t) => ({ ...t, x: origX + dx, y: origY + dy }));
   }, []);
 
   const stopDrag = useCallback(() => {
