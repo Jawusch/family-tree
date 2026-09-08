@@ -29,6 +29,12 @@ export interface GridLayout {
   height: number;
 }
 
+function parseYear(dateStr: string | undefined): number | undefined {
+  if (!dateStr) return undefined;
+  const m = dateStr.match(/\d{4}/);
+  return m ? Number(m[0]) : undefined;
+}
+
 /**
  * Lays every individual out on a strict grid: one row per generation, and
  * an x position (in fractional "slot" units) computed the way genealogy
@@ -55,6 +61,18 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     if (!xOf.has(id)) xOf.set(id, x);
   };
 
+  // Chronological ordering (by birth year, falling back to file order)
+  // reads more naturally left-to-right and tends to reduce line crossings,
+  // similar to how genealogy charts usually lay out siblings and marriages.
+  const byYear = (a: string, b: string): number => {
+    const ya = parseYear(data.individuals.get(a)?.birth?.date);
+    const yb = parseYear(data.individuals.get(b)?.birth?.date);
+    if (ya !== undefined && yb !== undefined) return ya - yb;
+    if (ya !== undefined) return -1;
+    if (yb !== undefined) return 1;
+    return 0;
+  };
+
   function layoutPerson(id: string): number {
     const existing = xOf.get(id);
     if (existing !== undefined) return existing;
@@ -67,7 +85,21 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       return x;
     }
 
-    const centers = fams.map((f) => layoutFamily(f));
+    // Marriages in chronological order (by first child's birth year, when
+    // known) so multiple families fan out left-to-right in a stable order.
+    const orderedFams = [...fams].sort((a, b) => {
+      const firstChildYear = (f: string) => {
+        const kids = data.families.get(f)?.children ?? [];
+        const years = kids.map((c) => parseYear(data.individuals.get(c)?.birth?.date)).filter((y): y is number => y !== undefined);
+        return years.length ? Math.min(...years) : undefined;
+      };
+      const ya = firstChildYear(a);
+      const yb = firstChildYear(b);
+      if (ya !== undefined && yb !== undefined) return ya - yb;
+      return 0;
+    });
+
+    const centers = orderedFams.map((f) => layoutFamily(f));
     const x = (Math.min(...centers) + Math.max(...centers)) / 2;
     setX(id, x);
     return xOf.get(id)!;
@@ -80,7 +112,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     visitingFamily.add(famId);
 
     const fam = data.families.get(famId)!;
-    const kids = fam.children.filter((c) => data.individuals.has(c));
+    const kids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
     // Only let children who aren't already positioned pull this family's
     // center. A child can already have a position if they were reached via
     // a different branch first (e.g. their spouse's family, when two
@@ -105,11 +137,16 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     return center;
   }
 
-  // Process real roots (no known parents) first, sorted by name, so the
-  // oldest generation reads left-to-right in a stable, predictable order.
+  // Process real roots (no known parents) first, chronologically (falling
+  // back to name), so the oldest generation reads left-to-right in a
+  // stable, predictable order.
   const roots = data.individualOrder
     .filter((id) => !(data.individuals.get(id)?.famc ?? []).some((f) => data.families.has(f)))
-    .sort((a, b) => (data.individuals.get(a)?.name ?? '').localeCompare(data.individuals.get(b)?.name ?? '', 'de'));
+    .sort((a, b) => {
+      const byBirth = byYear(a, b);
+      if (byBirth !== 0) return byBirth;
+      return (data.individuals.get(a)?.name ?? '').localeCompare(data.individuals.get(b)?.name ?? '', 'de');
+    });
   for (const id of roots) layoutPerson(id);
 
   // Catch-all for anyone not reached above (disconnected branches, or data
