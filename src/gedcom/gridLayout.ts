@@ -503,19 +503,19 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     maxGen = Math.max(maxGen, generation);
   }
 
-  // Marriage lines run at the row's own tile-centre height by default -
-  // including when the two spouses aren't next to each other, in which
-  // case the line simply passes behind the tiles in between (connectors
-  // are drawn underneath the tiles). Only where two marriage lines in the
-  // same row would genuinely run into each other - which happens once
-  // someone married more than once, since they can be tile-adjacent to at
-  // most two partners - do the extra ones drop to their own height below
-  // the row, so it stays unambiguous which line belongs to which marriage.
-  // Lines that merely touch at a shared spouse don't conflict: they read
-  // as one line running through that person.
-  const LANE_START = 14;
-  const LANE_STEP = 12;
-
+  // Marriage lines run horizontally through the row itself, at the tiles'
+  // own vertical middle - the parts that pass behind a tile are hidden
+  // (connectors are drawn underneath the tiles), so what's visible are the
+  // segments crossing the gaps between them. A line never leaves the row's
+  // band, so it can't be mistaken for a line going down to children.
+  //
+  // Once someone has married more than once they can only sit tile-adjacent
+  // to two of their partners, so the remaining lines have to reach past
+  // other people's tiles. Where two such lines in the same row would
+  // genuinely run into each other, the later ones get their own slightly
+  // lower height *within* the row band, so it stays clear which line
+  // belongs to which marriage. Lines that merely meet at a shared spouse
+  // aren't a conflict - they read as one line running through that person.
   interface MarriageSpan {
     famId: string;
     row: number;
@@ -533,14 +533,15 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   }
 
   const laneOf = new Map<string, number>();
+  const laneStepInRow = new Map<number, number>();
   const spansByRow = new Map<number, MarriageSpan[]>();
   for (const span of spans) {
     if (!spansByRow.has(span.row)) spansByRow.set(span.row, []);
     spansByRow.get(span.row)!.push(span);
   }
-  for (const rowSpans of spansByRow.values()) {
-    // Shortest first, so a long line spanning a remarriage further along
-    // the row is the one that dips below, not the neighbouring couples.
+  for (const [row, rowSpans] of spansByRow) {
+    // Shortest first, so a long line reaching past other tiles is the one
+    // that gives way, not the neighbouring couples sitting side by side.
     rowSpans.sort((a, b) => a.start - b.start || a.end - a.start - (b.end - b.start));
     const lanes: MarriageSpan[][] = [];
     for (const span of rowSpans) {
@@ -551,6 +552,10 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       (lanes[lane] ??= []).push(span);
       laneOf.set(span.famId, lane);
     }
+    // Fit all of this row's lanes into the lower half of the tile band, so
+    // even the deepest one still ends comfortably inside the tiles.
+    const maxLane = lanes.length - 1;
+    laneStepInRow.set(row, maxLane > 0 ? Math.min(10, (TILE_HEIGHT / 2 - 8) / maxLane) : 0);
   }
 
   // --- Orthogonal family connectors (spouse line + parent/child bus). ---
@@ -561,7 +566,6 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     const childPositions = fam.children.map((c) => tiles.get(c)).filter((p): p is TilePosition => !!p);
 
     let spouseLine: FamilyConnector['spouseLine'];
-    let bracket = '';
     // Where the children's line leaves the marriage line.
     let dropX: number | undefined;
     let dropY: number | undefined;
@@ -570,31 +574,21 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
       const leftCx = leftPos.x + TILE_WIDTH / 2;
       const rightCx = rightPos.x + TILE_WIDTH / 2;
-      const rowBottomY = Math.max(husbPos.y, wifePos.y) + TILE_HEIGHT;
       const lane = laneOf.get(fam.id) ?? 0;
-
-      if (lane === 0) {
-        const y = leftPos.y + TILE_HEIGHT / 2;
-        spouseLine = { x1: leftPos.x + TILE_WIDTH, y1: y, x2: rightPos.x, y2: y };
-        dropY = y;
-      } else {
-        const laneY = rowBottomY + LANE_START + (lane - 1) * LANE_STEP;
-        bracket = roundedPath([
-          { x: leftCx, y: rowBottomY },
-          { x: leftCx, y: laneY },
-          { x: rightCx, y: laneY },
-          { x: rightCx, y: rowBottomY },
-        ]);
-        dropY = laneY;
-      }
+      const step = laneStepInRow.get(leftPos.generation) ?? 0;
+      // Straight through the row, tile centre to tile centre - the parts
+      // behind tiles are hidden, so it shows up in the gaps between them.
+      const y = leftPos.y + TILE_HEIGHT / 2 + lane * step;
+      spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
+      dropY = y;
 
       // Hang the children from the point on the marriage line that
       // actually sits over them. For a couple side by side that's the
       // midpoint between them (their children are centred underneath);
       // when a remarriage put one partner further along the row with
       // their child directly below, it's that parent's own position - so
-      // the line drops straight down instead of running back across the
-      // other marriage's children.
+      // the line drops straight down out of that parent's tile instead of
+      // running back across the other marriage's children.
       const childCenters = childPositions.map((c) => c.x + TILE_WIDTH / 2);
       const overChildren = childCenters.length
         ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
@@ -603,10 +597,10 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     } else if (husbPos || wifePos) {
       const p = (husbPos ?? wifePos)!;
       dropX = p.x + TILE_WIDTH / 2;
-      dropY = p.y + TILE_HEIGHT;
+      dropY = p.y + TILE_HEIGHT / 2;
     }
 
-    let path = bracket;
+    let path: string | undefined;
     if (dropX !== undefined && dropY !== undefined && childPositions.length > 0) {
       const busY = (husbPos ?? wifePos)!.y + TILE_HEIGHT + ROW_GAP / 2;
       const childPaths = childPositions.map((c) => {
@@ -618,11 +612,11 @@ export function computeGridLayout(data: GedcomData): GridLayout {
           { x: cx, y: c.y },
         ]);
       });
-      path = [bracket, ...childPaths].filter(Boolean).join(' ');
+      path = childPaths.filter(Boolean).join(' ');
     }
 
     if (spouseLine || path) {
-      connectors.push({ familyId: fam.id, spouseLine, path: path || undefined });
+      connectors.push({ familyId: fam.id, spouseLine, path });
     }
   }
 
