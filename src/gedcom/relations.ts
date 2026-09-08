@@ -40,6 +40,12 @@ function computeGenerationSpanYears(data: GedcomData, years: Map<string, number>
   return Math.min(40, Math.max(15, median));
 }
 
+function isRoot(data: GedcomData, id: string): boolean {
+  const person = data.individuals.get(id);
+  if (!person) return true;
+  return !person.famc.some((f) => data.families.has(f));
+}
+
 /**
  * Fallback used only when no individual in the file has any usable date:
  * assigns generations purely from the famc/fams DAG (child = parent + 1,
@@ -86,16 +92,27 @@ function computeStructuralGenerations(data: GedcomData): Map<string, number> {
 }
 
 /**
- * Assigns each individual to a generation "row". Real family files often
- * have wildly different research depth on different branches (one side
- * traced back to the 1700s, the in-laws only a couple of generations) -
- * computing generation purely by counting steps in the ancestor DAG makes
- * spouses on the shallower side get dragged arbitrarily deep to match
- * their partner's longer chain, which then cascades to their children and
- * siblings. Birth year doesn't have that problem, so it's used as the
- * primary signal whenever available, bucketed into generation-sized bands;
- * the DAG is only used to fill in people with no usable date, and as a
- * final safety net so a child never ends up level with or above a parent.
+ * Assigns each individual to a generation "row".
+ *
+ * Only genuine roots (no known parents) get their generation from their own
+ * birth year, bucketed into generation-sized bands - they're the anchor
+ * point for each independent lineage. Everyone else's generation is derived
+ * purely structurally (exactly one row below their parents), never from
+ * their own birth year. This matters because real family files often have
+ * very different research depth on different branches, so two people who
+ * are, say, both the grandchild of a root couple can have birth years that
+ * round to different buckets on their own even though they're structurally
+ * at the exact same depth - deriving everyone's row from their own year
+ * used to let that rounding noise misalign people who are, in fact, the
+ * same number of generations from an ancestor.
+ *
+ * Two independent lineages only ever reconcile at the point they actually
+ * meet - a marriage - where the couple is equalised onto the later of their
+ * two rows; that then propagates forward to their own descendants exactly
+ * as normal, but never back up into either spouse's already-settled
+ * ancestors. So unlike naively re-deriving generation by counting ancestor
+ * steps everywhere, drift can't compound across a whole chain of marriages
+ * into unrelated, more deeply documented branches.
  */
 export function computeGenerations(data: GedcomData): Map<string, number> {
   const years = new Map<string, number>();
@@ -112,111 +129,92 @@ export function computeGenerations(data: GedcomData): Map<string, number> {
   const minYear = Math.min(...years.values());
 
   const gen = new Map<string, number>();
-  for (const [id, y] of years) {
-    gen.set(id, Math.round((y - minYear) / spanYears));
+  for (const id of data.individualOrder) {
+    if (!data.individuals.has(id) || !isRoot(data, id)) continue;
+    const y = years.get(id);
+    if (y !== undefined) gen.set(id, Math.round((y - minYear) / spanYears));
   }
 
-  // Fill in anyone without a usable date from a relative who has one:
-  // prefer their spouse's generation, then a parent's (+1), then a child's
-  // (-1). A few passes since resolving one person can unblock another.
-  const unresolved = new Set(data.individualOrder.filter((id) => !gen.has(id) && data.individuals.has(id)));
-  for (let pass = 0; pass < 10 && unresolved.size > 0; pass++) {
-    for (const id of [...unresolved]) {
-      const person = data.individuals.get(id)!;
+  for (let pass = 0; pass < 50; pass++) {
+    let changed = false;
 
-      let resolved = false;
+    for (const fam of data.families.values()) {
+      // Spouses reconcile onto the same row - but someone with known blood
+      // parents is authoritative (their row is a hard structural fact, and
+      // it's what keeps them aligned with their own siblings), so a root
+      // partner (unknown ancestry) always defers to them, never the other
+      // way round. Two roots (or two blood descendants of independent
+      // lines) equalise onto the later of the two as before.
+      if (fam.husb && fam.wife) {
+        const husbBlood = !isRoot(data, fam.husb);
+        const wifeBlood = !isRoot(data, fam.wife);
+        const husbGen = gen.get(fam.husb);
+        const wifeGen = gen.get(fam.wife);
+
+        if (husbBlood && !wifeBlood) {
+          if (husbGen !== undefined && wifeGen !== husbGen) {
+            gen.set(fam.wife, husbGen);
+            changed = true;
+          }
+        } else if (wifeBlood && !husbBlood) {
+          if (wifeGen !== undefined && husbGen !== wifeGen) {
+            gen.set(fam.husb, wifeGen);
+            changed = true;
+          }
+        } else {
+          const known = [fam.husb, fam.wife].filter((p) => gen.has(p));
+          if (known.length > 0) {
+            const shared = Math.max(...known.map((p) => gen.get(p)!));
+            if (gen.get(fam.husb) !== shared) {
+              gen.set(fam.husb, shared);
+              changed = true;
+            }
+            if (gen.get(fam.wife) !== shared) {
+              gen.set(fam.wife, shared);
+              changed = true;
+            }
+          }
+        }
+      }
+
+      // Every child sits exactly one row below their (resolved) parents.
+      const parents = [fam.husb, fam.wife].filter((p): p is string => !!p && gen.has(p));
+      if (parents.length === 0) continue;
+      const childGen = Math.max(...parents.map((p) => gen.get(p)!)) + 1;
+      for (const c of fam.children) {
+        if (!data.individuals.has(c)) continue;
+        if (gen.get(c) !== childGen) {
+          gen.set(c, childGen);
+          changed = true;
+        }
+      }
+    }
+
+    // Last-resort inference for anyone still unresolved at this point (a
+    // root with no usable date whose spouse is also still unresolved, or
+    // someone whose parents never resolved either): borrow a row from a
+    // child instead, one row up.
+    for (const id of data.individualOrder) {
+      if (gen.has(id) || !data.individuals.has(id)) continue;
+      const person = data.individuals.get(id)!;
       for (const famId of person.fams) {
         const fam = data.families.get(famId);
-        const spouse = fam?.husb === id ? fam.wife : fam?.wife === id ? fam.husb : undefined;
-        if (spouse && gen.has(spouse)) {
-          gen.set(id, gen.get(spouse)!);
-          resolved = true;
+        const kids = (fam?.children ?? []).filter((c) => gen.has(c));
+        if (kids.length > 0) {
+          gen.set(id, Math.min(...kids.map((c) => gen.get(c)!)) - 1);
+          changed = true;
           break;
         }
       }
-      if (!resolved) {
-        for (const famId of person.famc) {
-          const fam = data.families.get(famId);
-          const parents = [fam?.husb, fam?.wife].filter((p): p is string => !!p && gen.has(p));
-          if (parents.length > 0) {
-            gen.set(id, Math.max(...parents.map((p) => gen.get(p)!)) + 1);
-            resolved = true;
-            break;
-          }
-        }
-      }
-      if (!resolved) {
-        for (const famId of person.fams) {
-          const fam = data.families.get(famId);
-          const kids = (fam?.children ?? []).filter((c) => gen.has(c));
-          if (kids.length > 0) {
-            gen.set(id, Math.min(...kids.map((c) => gen.get(c)!)) - 1);
-            resolved = true;
-            break;
-          }
-        }
-      }
-      if (resolved) unresolved.delete(id);
     }
-  }
-  for (const id of unresolved) gen.set(id, 0);
 
-  // Three things still need reconciling, and doing them independently
-  // fights itself (e.g. a child-vs-parent bump can knock a couple apart
-  // again), so they run together until nothing moves:
-  //  - a child must never end up level with or above its parents (rounding
-  //    can occasionally place consecutive, closely-spaced generations in
-  //    the same bucket)
-  //  - full siblings (same two parents) always land on the same row - this
-  //    takes priority over the rule below, since sharing parents is a hard
-  //    fact but "spouses are the same age" is only a usual assumption
-  //  - spouses land on the same row (their own bucketed years might differ
-  //    by one, or one of them just got bumped by one of the rules above)
-  // Every adjustment here only ever moves someone to a *later* generation,
-  // and each bump is a single step tied to an actual neighbour already on
-  // the grid - so unlike the old ancestor-chain approach, drift can't run
-  // away by inheriting how many extra generations happen to be documented
-  // on some unrelated branch.
-  for (let pass = 0; pass < 30; pass++) {
-    let changed = false;
-    for (const fam of data.families.values()) {
-      const parents = [fam.husb, fam.wife].filter((p): p is string => !!p && gen.has(p));
-      if (parents.length === 2) {
-        const [a, b] = parents;
-        const shared = Math.max(gen.get(a)!, gen.get(b)!);
-        if (gen.get(a)! !== shared) {
-          gen.set(a, shared);
-          changed = true;
-        }
-        if (gen.get(b)! !== shared) {
-          gen.set(b, shared);
-          changed = true;
-        }
-      }
-
-      const siblings = fam.children.filter((c) => gen.has(c));
-      if (siblings.length > 1) {
-        const shared = Math.max(...siblings.map((c) => gen.get(c)!));
-        for (const c of siblings) {
-          if (gen.get(c)! !== shared) {
-            gen.set(c, shared);
-            changed = true;
-          }
-        }
-      }
-
-      const parentGen = parents.length ? Math.max(...parents.map((p) => gen.get(p)!)) : undefined;
-      if (parentGen !== undefined) {
-        for (const c of fam.children) {
-          if (!gen.has(c)) continue;
-          if (gen.get(c)! <= parentGen) {
-            gen.set(c, parentGen + 1);
-            changed = true;
-          }
-        }
-      }
-    }
     if (!changed) break;
+  }
+
+  // Anyone left (fully isolated: no date, no spouse, no parent, no child
+  // anywhere in the file) defaults to generation 0.
+  for (const id of data.individualOrder) {
+    if (!gen.has(id) && data.individuals.has(id)) gen.set(id, 0);
   }
 
   return gen;
