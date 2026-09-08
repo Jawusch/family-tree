@@ -503,39 +503,54 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     maxGen = Math.max(maxGen, generation);
   }
 
-  // Someone married more than once can only sit tile-adjacent to at most
-  // two of their partners - the rest end up further along the row, with
-  // other people's tiles in between. Rather than draw every one of their
-  // marriage lines through the same height (indistinguishable from one
-  // another), each marriage gets its own dedicated height ("lane"),
-  // stacked in order below the row, so which line belongs to which
-  // marriage is unambiguous.
+  // Marriage lines run at the row's own tile-centre height by default -
+  // including when the two spouses aren't next to each other, in which
+  // case the line simply passes behind the tiles in between (connectors
+  // are drawn underneath the tiles). Only where two marriage lines in the
+  // same row would genuinely run into each other - which happens once
+  // someone married more than once, since they can be tile-adjacent to at
+  // most two partners - do the extra ones drop to their own height below
+  // the row, so it stays unambiguous which line belongs to which marriage.
+  // Lines that merely touch at a shared spouse don't conflict: they read
+  // as one line running through that person.
   const LANE_START = 14;
   const LANE_STEP = 12;
+
+  interface MarriageSpan {
+    famId: string;
+    row: number;
+    start: number;
+    end: number;
+  }
+  const spans: MarriageSpan[] = [];
+  for (const fam of data.families.values()) {
+    const h = fam.husb ? tiles.get(fam.husb) : undefined;
+    const w = fam.wife ? tiles.get(fam.wife) : undefined;
+    if (!h || !w) continue;
+    const hc = h.x + TILE_WIDTH / 2;
+    const wc = w.x + TILE_WIDTH / 2;
+    spans.push({ famId: fam.id, row: h.generation, start: Math.min(hc, wc), end: Math.max(hc, wc) });
+  }
+
   const laneOf = new Map<string, number>();
-  const laneCountFor = new Map<string, number>();
-  for (const person of data.individuals.values()) {
-    const fams = person.fams.filter((f) => data.families.has(f));
-    if (fams.length < 2) continue;
-    const ordered = [...fams].sort((a, b) => {
-      const firstChildYear = (f: string) => {
-        const kids = data.families.get(f)?.children ?? [];
-        const years = kids
-          .map((c) => parseYear(data.individuals.get(c)?.birth?.date))
-          .filter((y): y is number => y !== undefined);
-        return years.length ? Math.min(...years) : undefined;
-      };
-      const ya = firstChildYear(a);
-      const yb = firstChildYear(b);
-      if (ya !== undefined && yb !== undefined) return ya - yb;
-      return 0;
-    });
-    ordered.forEach((famId, idx) => {
-      if (!laneOf.has(famId)) {
-        laneOf.set(famId, idx);
-        laneCountFor.set(famId, ordered.length);
-      }
-    });
+  const spansByRow = new Map<number, MarriageSpan[]>();
+  for (const span of spans) {
+    if (!spansByRow.has(span.row)) spansByRow.set(span.row, []);
+    spansByRow.get(span.row)!.push(span);
+  }
+  for (const rowSpans of spansByRow.values()) {
+    // Shortest first, so a long line spanning a remarriage further along
+    // the row is the one that dips below, not the neighbouring couples.
+    rowSpans.sort((a, b) => a.start - b.start || a.end - a.start - (b.end - b.start));
+    const lanes: MarriageSpan[][] = [];
+    for (const span of rowSpans) {
+      let lane = 0;
+      // Overlapping only counts when the spans genuinely cross, not when
+      // they meet at a shared spouse - hence the small tolerance.
+      while (lanes[lane]?.some((other) => span.start < other.end - 1 && other.start < span.end - 1)) lane++;
+      (lanes[lane] ??= []).push(span);
+      laneOf.set(span.famId, lane);
+    }
   }
 
   // --- Orthogonal family connectors (spouse line + parent/child bus). ---
@@ -544,71 +559,70 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     const husbPos = fam.husb ? tiles.get(fam.husb) : undefined;
     const wifePos = fam.wife ? tiles.get(fam.wife) : undefined;
     const childPositions = fam.children.map((c) => tiles.get(c)).filter((p): p is TilePosition => !!p);
-    const lane = laneOf.get(fam.id);
 
-    if (husbPos && wifePos && lane !== undefined) {
-      const rowBottomY = Math.max(husbPos.y, wifePos.y) + TILE_HEIGHT;
-      const laneY = rowBottomY + LANE_START + lane * LANE_STEP;
-      const husbCx = husbPos.x + TILE_WIDTH / 2;
-      const wifeCx = wifePos.x + TILE_WIDTH / 2;
-      const midX = (husbCx + wifeCx) / 2;
-
-      const bracket = roundedPath([
-        { x: husbCx, y: rowBottomY },
-        { x: husbCx, y: laneY },
-        { x: wifeCx, y: laneY },
-        { x: wifeCx, y: rowBottomY },
-      ]);
-
-      const maxLanes = laneCountFor.get(fam.id) ?? 1;
-      const busY = rowBottomY + LANE_START + maxLanes * LANE_STEP + LANE_START;
-      const childPaths = childPositions.map((c) => {
-        const cx = c.x + TILE_WIDTH / 2;
-        return roundedPath([
-          { x: midX, y: laneY },
-          { x: midX, y: busY },
-          { x: cx, y: busY },
-          { x: cx, y: c.y },
-        ]);
-      });
-
-      connectors.push({ familyId: fam.id, path: [bracket, ...childPaths].filter(Boolean).join(' ') });
-      continue;
-    }
-
-    let coupleCenterX: number | undefined;
-    let parentBottomY: number | undefined;
     let spouseLine: FamilyConnector['spouseLine'];
+    let bracket = '';
+    // Where the children's line leaves the marriage line.
+    let dropX: number | undefined;
+    let dropY: number | undefined;
 
     if (husbPos && wifePos) {
       const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
-      const y = leftPos.y + TILE_HEIGHT / 2;
-      spouseLine = { x1: leftPos.x + TILE_WIDTH, y1: y, x2: rightPos.x, y2: y };
-      coupleCenterX = (husbPos.x + wifePos.x) / 2 + TILE_WIDTH / 2;
-      parentBottomY = Math.max(husbPos.y, wifePos.y) + TILE_HEIGHT;
+      const leftCx = leftPos.x + TILE_WIDTH / 2;
+      const rightCx = rightPos.x + TILE_WIDTH / 2;
+      const rowBottomY = Math.max(husbPos.y, wifePos.y) + TILE_HEIGHT;
+      const lane = laneOf.get(fam.id) ?? 0;
+
+      if (lane === 0) {
+        const y = leftPos.y + TILE_HEIGHT / 2;
+        spouseLine = { x1: leftPos.x + TILE_WIDTH, y1: y, x2: rightPos.x, y2: y };
+        dropY = y;
+      } else {
+        const laneY = rowBottomY + LANE_START + (lane - 1) * LANE_STEP;
+        bracket = roundedPath([
+          { x: leftCx, y: rowBottomY },
+          { x: leftCx, y: laneY },
+          { x: rightCx, y: laneY },
+          { x: rightCx, y: rowBottomY },
+        ]);
+        dropY = laneY;
+      }
+
+      // Hang the children from the point on the marriage line that
+      // actually sits over them. For a couple side by side that's the
+      // midpoint between them (their children are centred underneath);
+      // when a remarriage put one partner further along the row with
+      // their child directly below, it's that parent's own position - so
+      // the line drops straight down instead of running back across the
+      // other marriage's children.
+      const childCenters = childPositions.map((c) => c.x + TILE_WIDTH / 2);
+      const overChildren = childCenters.length
+        ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
+        : (leftCx + rightCx) / 2;
+      dropX = Math.min(Math.max(overChildren, leftCx), rightCx);
     } else if (husbPos || wifePos) {
       const p = (husbPos ?? wifePos)!;
-      coupleCenterX = p.x + TILE_WIDTH / 2;
-      parentBottomY = p.y + TILE_HEIGHT;
+      dropX = p.x + TILE_WIDTH / 2;
+      dropY = p.y + TILE_HEIGHT;
     }
 
-    let path: string | undefined;
-    if (coupleCenterX !== undefined && parentBottomY !== undefined && childPositions.length > 0) {
-      const busY = parentBottomY + ROW_GAP / 2;
+    let path = bracket;
+    if (dropX !== undefined && dropY !== undefined && childPositions.length > 0) {
+      const busY = (husbPos ?? wifePos)!.y + TILE_HEIGHT + ROW_GAP / 2;
       const childPaths = childPositions.map((c) => {
         const cx = c.x + TILE_WIDTH / 2;
         return roundedPath([
-          { x: coupleCenterX!, y: parentBottomY! },
-          { x: coupleCenterX!, y: busY },
+          { x: dropX!, y: dropY! },
+          { x: dropX!, y: busY },
           { x: cx, y: busY },
           { x: cx, y: c.y },
         ]);
       });
-      path = childPaths.filter(Boolean).join(' ');
+      path = [bracket, ...childPaths].filter(Boolean).join(' ');
     }
 
     if (spouseLine || path) {
-      connectors.push({ familyId: fam.id, spouseLine, path });
+      connectors.push({ familyId: fam.id, spouseLine, path: path || undefined });
     }
   }
 
