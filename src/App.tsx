@@ -9,8 +9,12 @@ import { ImportScreen } from './components/ImportScreen';
 import { TreeGraph } from './components/TreeGraph';
 import { PersonListTable } from './components/PersonListTable';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { SettingsPanel } from './components/SettingsPanel';
 import { loadGedcom, saveGedcom, clearGedcom } from './storage/localStore';
 import { downloadTextFile } from './utils/download';
+import { loadSettings, saveSettings, type TreeSettings } from './tree/settings';
+import { buildTileVisuals } from './tree/tileVisuals';
+import { exportTreeAsPdf } from './export/pdf';
 
 type View = 'graph' | 'list';
 
@@ -27,6 +31,9 @@ function App() {
   const [error, setError] = useState<string | undefined>();
   const [restoring, setRestoring] = useState(true);
   const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null);
+  const [settings, setSettings] = useState<TreeSettings>(() => loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   useEffect(() => {
     loadGedcom().then((stored) => {
@@ -46,6 +53,11 @@ function App() {
     void saveGedcom(serializeGedcom(nextData, name, new Date().toISOString()));
   };
 
+  const updateSettings = (next: TreeSettings) => {
+    setSettings(next);
+    saveSettings(next);
+  };
+
   const handleFileText = (text: string, name: string) => {
     try {
       const parsed = parseGedcom(text, name);
@@ -63,7 +75,16 @@ function App() {
     }
   };
 
-  const layout = useMemo(() => (data ? computeGridLayout(data) : null), [data]);
+  const visuals = useMemo(() => (data ? buildTileVisuals(data, settings) : null), [data, settings]);
+
+  const layout = useMemo(() => {
+    if (!data || !visuals) return null;
+    return computeGridLayout(data, {
+      widthOf: (id) => visuals.byId.get(id)?.width ?? visuals.defaultWidth,
+      defaultWidth: visuals.defaultWidth,
+      height: visuals.height,
+    });
+  }, [data, visuals]);
 
   const handleReset = () => {
     setData(null);
@@ -94,6 +115,18 @@ function App() {
     downloadTextFile(text, `${base}_export.ged`);
   };
 
+  const handleExportPdf = async () => {
+    if (!data || !layout || !visuals || pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      await exportTreeAsPdf(data, layout, visuals, settings, fileName);
+    } catch {
+      setError('Das PDF konnte nicht erstellt werden.');
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   const confirmDeletion = () => {
     if (!data || !pendingDeletion) return;
     const next = deletePeople(data, pendingDeletion.ids);
@@ -111,7 +144,7 @@ function App() {
     return <div className="app-loading">Lade…</div>;
   }
 
-  if (!data || !layout) {
+  if (!data || !layout || !visuals) {
     return <ImportScreen onFileText={handleFileText} errorMessage={error} />;
   }
 
@@ -144,12 +177,33 @@ function App() {
               Liste
             </button>
           </div>
+          <button className="secondary" onClick={handleExportPdf} disabled={pdfBusy}>
+            {pdfBusy ? 'PDF wird erstellt…' : 'Als PDF speichern'}
+          </button>
           <button className="secondary" onClick={handleExport}>
-            Exportieren
+            GEDCOM exportieren
           </button>
           <button className="secondary" onClick={handleReset}>
             Andere Datei importieren
           </button>
+          <div className="settings-anchor">
+            <button
+              className={`icon-button${settingsOpen ? ' active' : ''}`}
+              onClick={() => setSettingsOpen((open) => !open)}
+              aria-label="Einstellungen"
+              aria-expanded={settingsOpen}
+              title="Einstellungen"
+            >
+              <GearIcon />
+            </button>
+            {settingsOpen && (
+              <SettingsPanel
+                settings={settings}
+                onChange={updateSettings}
+                onClose={() => setSettingsOpen(false)}
+              />
+            )}
+          </div>
         </div>
       </header>
 
@@ -162,7 +216,14 @@ function App() {
       <main className="main-content">
         <div className="main-view">
           {view === 'graph' ? (
-            <TreeGraph data={data} layout={layout} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
+            <TreeGraph
+              data={data}
+              layout={layout}
+              visuals={visuals}
+              settings={settings}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+            />
           ) : (
             <PersonListTable data={data} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
           )}
@@ -177,6 +238,15 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
   );
 }
 

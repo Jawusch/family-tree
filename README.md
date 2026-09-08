@@ -8,7 +8,14 @@ Tabellenansicht aller Einträge.
 
 Einzelne Personen (oder eine Mehrfachauswahl) lassen sich löschen, und der
 aktuelle (bearbeitete) Datensatz kann jederzeit wieder als GEDCOM-Datei
-exportiert werden.
+exportiert werden. Über `Als PDF speichern` lässt sich der ganze Baum
+zusätzlich als einseitiges Vektor-PDF sichern – also beliebig skalierbar und
+druckfähig, statt als Screenshot.
+
+Über das Zahnrad rechts oben lässt sich die Darstellung einstellen: Nachname
+auf einer eigenen Zeile, fette Namen, automatische Kachelbreite (mit Min-/
+Max-Grenze), Schriftgröße sowie Hintergrund- und Textfarbe für männliche und
+weibliche Einträge. Die Einstellungen bleiben lokal gespeichert.
 
 Läuft komplett im Browser: Die GEDCOM-Datei wird lokal geparst, nichts wird
 an einen Server geschickt. Der zuletzt importierte (und ggf. bearbeitete)
@@ -46,3 +53,7 @@ npm run build
   Eltern-über-Kind-Zentrierung (`src/gedcom/relations.ts`,
   `src/gedcom/gridLayout.ts`)
 - Lokale Persistenz via `idb-keyval` (IndexedDB)
+- Darstellungs-Einstellungen (Farben, Schriftgröße, Kachelform) via
+  `localStorage`, Textvermessung über Canvas (`src/tree/`)
+- PDF-Export als Vektorgrafik mit jsPDF + svg2pdf.js, erst beim ersten Klick
+  nachgeladen (`src/export/pdf.ts`)

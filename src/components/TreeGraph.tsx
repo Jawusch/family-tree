@@ -1,10 +1,22 @@
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import type { GedcomData } from '../gedcom/types';
-import { TILE_WIDTH, TILE_HEIGHT, type GridLayout } from '../gedcom/gridLayout';
+import type { GridLayout } from '../gedcom/gridLayout';
+import type { TreeSettings } from '../tree/settings';
+import type { TileVisuals } from '../tree/tileVisuals';
+import { FONT_STACK } from '../tree/tileVisuals';
+import {
+  buildRenderTiles,
+  mutedColor,
+  CONNECTOR_COLOR,
+  CONNECTOR_WIDTH,
+  TILE_RADIUS,
+} from '../tree/renderModel';
 
 interface TreeGraphProps {
   data: GedcomData;
   layout: GridLayout;
+  visuals: TileVisuals;
+  settings: TreeSettings;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
 }
@@ -17,15 +29,23 @@ interface Transform {
 
 const DRAG_THRESHOLD = 4;
 
-function truncate(name: string, max = 22): string {
-  return name.length > max ? `${name.slice(0, max - 1)}…` : name;
-}
-
-export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGraphProps) {
+export function TreeGraph({
+  data,
+  layout,
+  visuals,
+  settings,
+  selectedIds,
+  onToggleSelect,
+}: TreeGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, k: 1 });
   const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const didDrag = useRef(false);
+
+  const renderTiles = useMemo(
+    () => buildRenderTiles(data, layout, visuals, settings),
+    [data, layout, visuals, settings],
+  );
 
   // Fit the whole tree into view once it's laid out (or a new file is
   // loaded). The container may still report a zero-sized rect on the very
@@ -125,50 +145,60 @@ export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGra
       <svg
         width={layout.width}
         height={layout.height}
-        style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`, transformOrigin: '0 0' }}
+        style={{
+          transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`,
+          transformOrigin: '0 0',
+        }}
       >
-        <g className="connectors">
+        <g className="connectors" stroke={CONNECTOR_COLOR} strokeWidth={CONNECTOR_WIDTH} fill="none">
           {layout.connectors.map((c) => (
             <g key={c.familyId}>
               {c.spouseLine && (
-                <line
-                  x1={c.spouseLine.x1}
-                  y1={c.spouseLine.y1}
-                  x2={c.spouseLine.x2}
-                  y2={c.spouseLine.y2}
-                  className="connector-line"
-                />
+                <line x1={c.spouseLine.x1} y1={c.spouseLine.y1} x2={c.spouseLine.x2} y2={c.spouseLine.y2} />
               )}
-              {c.path && <path d={c.path} className="connector-line" fill="none" />}
+              {c.path && <path d={c.path} />}
             </g>
           ))}
         </g>
         <g className="tiles">
-          {[...layout.tiles.values()].map((pos) => {
-            const person = data.individuals.get(pos.id);
-            if (!person) return null;
+          {renderTiles.map(({ pos, visual, fill, stroke, textColor }) => {
             const isSelected = selectedIds.has(pos.id);
-            const years = [person.birth?.date?.match(/\d{4}/)?.[0], person.death?.date?.match(/\d{4}/)?.[0]]
-              .filter(Boolean)
-              .join(' – ');
+            const muted = mutedColor(textColor);
 
             return (
               <g
                 key={pos.id}
                 transform={`translate(${pos.x}, ${pos.y})`}
-                className={`tile tile--${person.sex}${isSelected ? ' tile--selected' : ''}`}
+                className={`tile${isSelected ? ' tile--selected' : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (!didDrag.current) onToggleSelect(pos.id);
                 }}
               >
-                <rect width={TILE_WIDTH} height={TILE_HEIGHT} rx={6} className="tile-rect" />
-                <text className="tile-name" x={TILE_WIDTH / 2} y={TILE_HEIGHT / 2 - 6}>
-                  {truncate(person.name)}
-                </text>
-                <text className="tile-dates" x={TILE_WIDTH / 2} y={TILE_HEIGHT / 2 + 14}>
-                  {years || '—'}
-                </text>
+                <rect
+                  width={visual.width}
+                  height={pos.h}
+                  rx={TILE_RADIUS}
+                  className="tile-rect"
+                  fill={fill}
+                  stroke={isSelected ? undefined : stroke}
+                  strokeWidth={isSelected ? undefined : 1.5}
+                />
+                {visual.lines.map((line, i) => (
+                  <text
+                    key={i}
+                    x={visual.width / 2}
+                    y={line.y}
+                    textAnchor="middle"
+                    fontFamily={FONT_STACK}
+                    fontSize={line.fontSize}
+                    fontWeight={line.bold ? 800 : line.muted ? 400 : 600}
+                    fill={line.muted ? muted : textColor}
+                    pointerEvents="none"
+                  >
+                    {line.text}
+                  </text>
+                ))}
               </g>
             );
           })}

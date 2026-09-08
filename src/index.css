@@ -227,50 +227,15 @@ button.danger:hover {
   display: block;
 }
 
-.connector-line {
-  stroke: #9aa1ab;
-  stroke-width: 1.5;
-  fill: none;
-}
-
 .tile {
   cursor: pointer;
 }
 
-.tile-rect {
-  fill: var(--unknown);
-  stroke: var(--unknown-border);
-  stroke-width: 1.5;
-}
-
-.tile--M .tile-rect {
-  fill: var(--male);
-  stroke: var(--male-border);
-}
-
-.tile--F .tile-rect {
-  fill: var(--female);
-  stroke: var(--female-border);
-}
-
+/* Fill, stroke and text colours come from the settings as inline
+   attributes; only the selection highlight is styled here so it wins. */
 .tile--selected .tile-rect {
   stroke: var(--accent);
   stroke-width: 2.5;
-}
-
-.tile-name {
-  fill: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-  text-anchor: middle;
-  pointer-events: none;
-}
-
-.tile-dates {
-  fill: var(--text-muted);
-  font-size: 11px;
-  text-anchor: middle;
-  pointer-events: none;
 }
 
 /* --- Person list --- */
@@ -374,4 +339,195 @@ button.danger:hover {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* --- Settings panel --- */
+
+.settings-anchor {
+  position: relative;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.icon-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: 320px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+}
+
+.settings-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1em;
+}
+
+.settings-panel h3 {
+  margin: 0 0 8px;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-panel section {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-panel section:last-of-type {
+  border-bottom: none;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 0.92em;
+}
+
+/* The real checkbox stays focusable but invisible; the pill next to it is
+   what's actually drawn. */
+.settings-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.settings-switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.settings-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s;
+}
+
+.settings-toggle input:checked + .settings-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-toggle input:checked + .settings-switch::after {
+  transform: translateX(16px);
+}
+
+.settings-toggle input:focus-visible + .settings-switch {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-sub {
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--border);
+  margin: 4px 0 4px 2px;
+}
+
+.settings-number,
+.settings-color {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 0.92em;
+}
+
+.settings-number-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-number input {
+  width: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-color-inputs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-color input[type='color'] {
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.settings-hex {
+  width: 88px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

@@ -5,13 +5,28 @@ export const TILE_WIDTH = 180;
 export const TILE_HEIGHT = 60;
 const COL_GAP = 30;
 const ROW_GAP = 100;
-const ROW_STEP = TILE_HEIGHT + ROW_GAP;
+
+/** Tile dimensions the layout should work with. Widths can differ per
+ * person (auto-sized tiles), the height is uniform so rows stay aligned. */
+export interface LayoutMetrics {
+  widthOf: (id: string) => number;
+  defaultWidth: number;
+  height: number;
+}
+
+const DEFAULT_METRICS: LayoutMetrics = {
+  widthOf: () => TILE_WIDTH,
+  defaultWidth: TILE_WIDTH,
+  height: TILE_HEIGHT,
+};
 
 export interface TilePosition {
   id: string;
   generation: number;
   x: number;
   y: number;
+  w: number;
+  h: number;
 }
 
 export interface FamilyConnector {
@@ -123,12 +138,18 @@ function roundedPath(points: { x: number; y: number }[], radius = CORNER_RADIUS)
  * its children never drifts away from them afterwards the way a separate
  * "fix up overlaps per row" pass would.
  */
-export function computeGridLayout(data: GedcomData): GridLayout {
+export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEFAULT_METRICS): GridLayout {
   const generations = computeGenerations(data);
 
   if (data.individualOrder.length === 0) {
     return { tiles: new Map(), connectors: [], width: 800, height: 600 };
   }
+
+  const tileH = metrics.height;
+  const rowStep = tileH + ROW_GAP;
+  /** Width of one person's tile. */
+  const wOf = (id: string | undefined): number =>
+    (id ? metrics.widthOf(id) : undefined) ?? metrics.defaultWidth;
 
   const positions = new Map<string, { x: number; y: number }>();
   const personBoundsCache = new Map<string, Bounds>();
@@ -202,9 +223,9 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     if (fams.length === 0) {
       // Leaf: no descendants, just their own tile.
       const x = 0;
-      positions.set(id, { x, y: gen * ROW_STEP });
-      const contour: Contour = new Map([[gen, { min: x, max: x + TILE_WIDTH }]]);
-      const bounds: Bounds = { centerX: x + TILE_WIDTH / 2, contour, members: [id] };
+      positions.set(id, { x, y: gen * rowStep });
+      const contour: Contour = new Map([[gen, { min: x, max: x + wOf(id) }]]);
+      const bounds: Bounds = { centerX: x + wOf(id) / 2, contour, members: [id] };
       personBoundsCache.set(id, bounds);
       return bounds;
     }
@@ -230,7 +251,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     }
 
     const ownPos = positions.get(id);
-    const centerX = ownPos ? ownPos.x + TILE_WIDTH / 2 : primaryBounds.centerX;
+    const centerX = ownPos ? ownPos.x + wOf(id) / 2 : primaryBounds.centerX;
 
     const bounds: Bounds = { centerX, contour, members: [...new Set(members)] };
     personBoundsCache.set(id, bounds);
@@ -261,7 +282,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     if (childrenBoundsList.length > 0) {
       centerX = (childrenBoundsList[0].centerX + childrenBoundsList[childrenBoundsList.length - 1].centerX) / 2;
     } else if (allKids.length > 0) {
-      const existingXs = allKids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      const existingXs = allKids.map((c) => positions.get(c)!.x + wOf(c) / 2);
       centerX = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
     } else {
       centerX = 0;
@@ -270,10 +291,10 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     const members = childrenBoundsList.flatMap((b) => b.members);
     if (newSpouse && data.individuals.has(newSpouse) && !positions.has(newSpouse)) {
       const gen = Math.max(generations.get(newSpouse) ?? -Infinity, generations.get(anchorId) ?? -Infinity, 0);
-      const x = centerX - TILE_WIDTH / 2;
-      positions.set(newSpouse, { x, y: gen * ROW_STEP });
+      const x = centerX - wOf(newSpouse) / 2;
+      positions.set(newSpouse, { x, y: gen * rowStep });
       members.push(newSpouse);
-      extendRow(contour, gen, x, x + TILE_WIDTH);
+      extendRow(contour, gen, x, x + wOf(newSpouse));
     }
 
     const bounds: Bounds = { centerX, contour, members };
@@ -318,7 +339,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       // top-level entry, since these parents were never part of it and so
       // don't move along - tracked for a final re-anchoring pass once
       // every shift in the whole tree is done.
-      const existingXs = allKids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      const existingXs = allKids.map((c) => positions.get(c)!.x + wOf(c) / 2);
       coupleCenterX = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
       anchoredFamilies.add(famId);
     } else {
@@ -349,33 +370,33 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       if (husbX === undefined) ownedBy.set(husb, famId);
       if (wifeX === undefined) ownedBy.set(wife, famId);
       if (husbX === undefined && wifeX === undefined) {
-        husbX = coupleCenterX - TILE_WIDTH - COL_GAP / 2;
-        wifeX = husbX + TILE_WIDTH + COL_GAP;
+        husbX = coupleCenterX - wOf(husb) - COL_GAP / 2;
+        wifeX = husbX + wOf(husb) + COL_GAP;
       } else if (husbX === undefined) {
-        husbX = coupleCenterX - TILE_WIDTH - COL_GAP / 2;
+        husbX = coupleCenterX - wOf(husb) - COL_GAP / 2;
       } else if (wifeX === undefined) {
         wifeX = coupleCenterX + COL_GAP / 2;
       }
       if (!positions.has(husb)) {
-        positions.set(husb, { x: husbX!, y: coupleGen * ROW_STEP });
+        positions.set(husb, { x: husbX!, y: coupleGen * rowStep });
         members.push(husb);
       }
       if (!positions.has(wife)) {
-        positions.set(wife, { x: wifeX!, y: coupleGen * ROW_STEP });
+        positions.set(wife, { x: wifeX!, y: coupleGen * rowStep });
         members.push(wife);
       }
     } else {
       const single = husb ?? wife;
       if (single && !positions.has(single)) {
         ownedBy.set(single, famId);
-        positions.set(single, { x: coupleCenterX - TILE_WIDTH / 2, y: coupleGen * ROW_STEP });
+        positions.set(single, { x: coupleCenterX - wOf(single) / 2, y: coupleGen * rowStep });
         members.push(single);
       }
     }
 
     const rowXs: number[] = [];
-    if (husb && positions.has(husb)) rowXs.push(positions.get(husb)!.x, positions.get(husb)!.x + TILE_WIDTH);
-    if (wife && positions.has(wife)) rowXs.push(positions.get(wife)!.x, positions.get(wife)!.x + TILE_WIDTH);
+    if (husb && positions.has(husb)) rowXs.push(positions.get(husb)!.x, positions.get(husb)!.x + wOf(husb));
+    if (wife && positions.has(wife)) rowXs.push(positions.get(wife)!.x, positions.get(wife)!.x + wOf(wife));
     if (rowXs.length > 0) extendRow(contour, coupleGen, Math.min(...rowXs), Math.max(...rowXs));
 
     visitingFamily.delete(famId);
@@ -432,7 +453,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       if (!fam) continue;
       const kids = fam.children.filter((c) => data.individuals.has(c) && positions.has(c));
       if (kids.length === 0) continue;
-      const xs = kids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      const xs = kids.map((c) => positions.get(c)!.x + wOf(c) / 2);
       const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
 
       // Only move the spouse(s) this family actually owns - one of them
@@ -443,12 +464,12 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       const ownedHusb = fam.husb && ownedBy.get(fam.husb) === famId ? fam.husb : undefined;
       const ownedWife = fam.wife && ownedBy.get(fam.wife) === famId ? fam.wife : undefined;
       if (ownedHusb && ownedWife) {
-        positions.get(ownedHusb)!.x = centerX - TILE_WIDTH - COL_GAP / 2;
+        positions.get(ownedHusb)!.x = centerX - wOf(ownedHusb) - COL_GAP / 2;
         positions.get(ownedWife)!.x = centerX + COL_GAP / 2;
       } else if (ownedHusb) {
-        positions.get(ownedHusb)!.x = centerX - TILE_WIDTH / 2;
+        positions.get(ownedHusb)!.x = centerX - wOf(ownedHusb) / 2;
       } else if (ownedWife) {
-        positions.get(ownedWife)!.x = centerX - TILE_WIDTH / 2;
+        positions.get(ownedWife)!.x = centerX - wOf(ownedWife) / 2;
       }
     }
   }
@@ -463,7 +484,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   // their exact position).
   const rowsForSafety = new Map<number, string[]>();
   for (const [id, pos] of positions) {
-    const gen = Math.round(pos.y / ROW_STEP);
+    const gen = Math.round(pos.y / rowStep);
     if (!rowsForSafety.has(gen)) rowsForSafety.set(gen, []);
     rowsForSafety.get(gen)!.push(id);
   }
@@ -474,7 +495,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       const curr = sorted[i];
       const prevX = positions.get(prev)!.x;
       const currX = positions.get(curr)!.x;
-      const gap = currX - (prevX + TILE_WIDTH);
+      const gap = currX - (prevX + wOf(prev));
       if (gap >= COL_GAP) continue;
       const deficit = COL_GAP - gap;
       if (ownedBy.has(curr)) {
@@ -491,15 +512,15 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   let maxGen = 0;
   for (const [id, pos] of positions) {
     // Derive the reported generation from where the tile actually ended up
-    // (pos.y is always set as someGeneration * ROW_STEP) rather than
+    // (pos.y is always set as someGeneration * rowStep) rather than
     // re-reading computeGenerations directly - those two can disagree in
     // the rare case of two blood descendants of independent lines
     // marrying, where the couple is deliberately rendered together on the
     // deeper of their two generations; using the real row here keeps the
     // reported generation consistent with what's actually drawn.
-    const generation = Math.round(pos.y / ROW_STEP);
-    tiles.set(id, { id, generation, x: pos.x, y: pos.y });
-    maxX = Math.max(maxX, pos.x);
+    const generation = Math.round(pos.y / rowStep);
+    tiles.set(id, { id, generation, x: pos.x, y: pos.y, w: wOf(id), h: tileH });
+    maxX = Math.max(maxX, pos.x + wOf(id));
     maxGen = Math.max(maxGen, generation);
   }
 
@@ -527,8 +548,8 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     const h = fam.husb ? tiles.get(fam.husb) : undefined;
     const w = fam.wife ? tiles.get(fam.wife) : undefined;
     if (!h || !w) continue;
-    const hc = h.x + TILE_WIDTH / 2;
-    const wc = w.x + TILE_WIDTH / 2;
+    const hc = h.x + h.w / 2;
+    const wc = w.x + w.w / 2;
     spans.push({ famId: fam.id, row: h.generation, start: Math.min(hc, wc), end: Math.max(hc, wc) });
   }
 
@@ -561,7 +582,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     // Fit all of this row's lanes into the lower half of the tile band, so
     // even the deepest one still ends comfortably inside the tiles.
     const maxLane = lanes.length - 1;
-    laneStepInRow.set(row, maxLane > 0 ? Math.min(10, (TILE_HEIGHT / 2 - 8) / maxLane) : 0);
+    laneStepInRow.set(row, maxLane > 0 ? Math.min(10, Math.max(2, tileH / 2 - 8) / maxLane) : 0);
   }
 
   // --- Orthogonal family connectors (spouse line + parent/child bus). ---
@@ -578,20 +599,20 @@ export function computeGridLayout(data: GedcomData): GridLayout {
 
     if (husbPos && wifePos) {
       const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
-      const leftCx = leftPos.x + TILE_WIDTH / 2;
-      const rightCx = rightPos.x + TILE_WIDTH / 2;
+      const leftCx = leftPos.x + leftPos.w / 2;
+      const rightCx = rightPos.x + rightPos.w / 2;
       const lane = laneOf.get(fam.id) ?? 0;
       const step = laneStepInRow.get(leftPos.generation) ?? 0;
       // Straight through the row, tile centre to tile centre - the parts
       // behind tiles are hidden, so it shows up in the gaps between them.
-      const y = leftPos.y + TILE_HEIGHT / 2 + lane * step;
+      const y = leftPos.y + tileH / 2 + lane * step;
       spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
       dropY = y;
 
       // Hang the children from the point on the marriage line that sits
       // over them - for a couple side by side that's the gap between the
       // two of them (their children are centred underneath anyway).
-      const childCenters = childPositions.map((c) => c.x + TILE_WIDTH / 2);
+      const childCenters = childPositions.map((c) => c.x + c.w / 2);
       const overChildren = childCenters.length
         ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
         : (leftCx + rightCx) / 2;
@@ -605,11 +626,11 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       // right under one partner), step into the gap beside that tile,
       // towards the rest of the line.
       const blocking = (tilesInRow.get(leftPos.generation) ?? []).find(
-        (t) => drop > t.x - 0.5 && drop < t.x + TILE_WIDTH + 0.5,
+        (t) => drop > t.x - 0.5 && drop < t.x + t.w + 0.5,
       );
       if (blocking) {
         const inGapLeft = blocking.x - COL_GAP / 2;
-        const inGapRight = blocking.x + TILE_WIDTH + COL_GAP / 2;
+        const inGapRight = blocking.x + blocking.w + COL_GAP / 2;
         const fits = (x: number) => x >= leftCx - 0.5 && x <= rightCx + 0.5;
         // Prefer the gap on the side the rest of the line runs off to.
         const preferLeft = drop - leftCx > rightCx - drop;
@@ -623,15 +644,15 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       // A lone parent has no marriage line to branch off, so the line
       // starts at the bottom edge of their tile.
       const p = (husbPos ?? wifePos)!;
-      dropX = p.x + TILE_WIDTH / 2;
-      dropY = p.y + TILE_HEIGHT;
+      dropX = p.x + p.w / 2;
+      dropY = p.y + tileH;
     }
 
     let path: string | undefined;
     if (dropX !== undefined && dropY !== undefined && childPositions.length > 0) {
-      const busY = (husbPos ?? wifePos)!.y + TILE_HEIGHT + ROW_GAP / 2;
+      const busY = (husbPos ?? wifePos)!.y + tileH + ROW_GAP / 2;
       const childPaths = childPositions.map((c) => {
-        const cx = c.x + TILE_WIDTH / 2;
+        const cx = c.x + c.w / 2;
         return roundedPath([
           { x: dropX!, y: dropY! },
           { x: dropX!, y: busY },
@@ -647,8 +668,8 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     }
   }
 
-  const width = maxX + TILE_WIDTH + 100;
-  const height = (maxGen + 1) * ROW_STEP + 100;
+  const width = maxX + 100;
+  const height = (maxGen + 1) * rowStep + 100;
 
   return { tiles, connectors, width, height };
 }

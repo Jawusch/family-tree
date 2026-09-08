@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "idb-keyval": "^6.3.0",
+    "jspdf": "^4.2.1",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "svg2pdf.js": "^2.8.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
