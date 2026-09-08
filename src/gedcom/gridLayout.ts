@@ -134,6 +134,11 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   const personBoundsCache = new Map<string, Bounds>();
   const familyBoundsCache = new Map<string, Bounds>();
   const visitingFamily = new Set<string>();
+  const anchoredFamilies = new Set<string>();
+  /** Which family "owns" (was the one to actually set) a given
+   * individual's x position - used so the re-anchoring pass below only
+   * ever moves someone their own family is authoritative for. */
+  const ownedBy = new Map<string, string>();
 
   const byYear = (a: string, b: string): number => {
     const ya = parseYear(data.individuals.get(a)?.birth?.date);
@@ -307,9 +312,15 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       coupleCenterX = (childrenBoundsList[0].centerX + childrenBoundsList[childrenBoundsList.length - 1].centerX) / 2;
     } else if (allKids.length > 0) {
       // Every child here was already positioned via another branch -
-      // anchor near them instead of an arbitrary, unrelated spot.
+      // anchor near them instead of an arbitrary, unrelated spot. That
+      // anchor is only a snapshot, though: the branch that positioned
+      // them can still get shifted again later on its own (unrelated)
+      // top-level entry, since these parents were never part of it and so
+      // don't move along - tracked for a final re-anchoring pass once
+      // every shift in the whole tree is done.
       const existingXs = allKids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
       coupleCenterX = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
+      anchoredFamilies.add(famId);
     } else {
       coupleCenterX = 0;
     }
@@ -331,6 +342,12 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     if (husb && wife) {
       let husbX = positions.get(husb)?.x;
       let wifeX = positions.get(wife)?.x;
+      // Remember which of the two (if any) this family is actually the
+      // one setting, *before* setting it - a re-anchoring pass later must
+      // only ever move the spouse this family itself owns, never one
+      // that's already positioned (and authoritative) elsewhere.
+      if (husbX === undefined) ownedBy.set(husb, famId);
+      if (wifeX === undefined) ownedBy.set(wife, famId);
       if (husbX === undefined && wifeX === undefined) {
         husbX = coupleCenterX - TILE_WIDTH - COL_GAP / 2;
         wifeX = husbX + TILE_WIDTH + COL_GAP;
@@ -350,6 +367,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     } else {
       const single = husb ?? wife;
       if (single && !positions.has(single)) {
+        ownedBy.set(single, famId);
         positions.set(single, { x: coupleCenterX - TILE_WIDTH / 2, y: coupleGen * ROW_STEP });
         members.push(single);
       }
@@ -395,6 +413,77 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     topLevelBounds.push(layoutPersonBounds(id));
   }
   placeLeftToRight(topLevelBounds);
+
+  // Anchored families (positioned near children who turned out to already
+  // be placed via a different branch - e.g. married into another root's
+  // family tree, or, for someone with no descendants of their own beyond a
+  // childless marriage, simply reached through their spouse's independent
+  // root before their own parents got a chance to place them as a child)
+  // only had a snapshot of that branch's position to work with. If that
+  // branch was on a *different* top-level entry, it can have been shifted
+  // again since - these parents were never one of its members and so
+  // never moved along. Re-centre each one now that every shift in the
+  // whole tree has actually happened. A few passes since re-centring one
+  // anchored family can itself move the anchor a rarer, nested case
+  // depends on.
+  for (let pass = 0; pass < 3; pass++) {
+    for (const famId of anchoredFamilies) {
+      const fam = data.families.get(famId);
+      if (!fam) continue;
+      const kids = fam.children.filter((c) => data.individuals.has(c) && positions.has(c));
+      if (kids.length === 0) continue;
+      const xs = kids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+
+      // Only move the spouse(s) this family actually owns - one of them
+      // can easily be someone already (and authoritatively) positioned by
+      // their own, different family, like Helga above, who must never be
+      // dragged along just because *her* husband's remarriage needed
+      // re-centring.
+      const ownedHusb = fam.husb && ownedBy.get(fam.husb) === famId ? fam.husb : undefined;
+      const ownedWife = fam.wife && ownedBy.get(fam.wife) === famId ? fam.wife : undefined;
+      if (ownedHusb && ownedWife) {
+        positions.get(ownedHusb)!.x = centerX - TILE_WIDTH - COL_GAP / 2;
+        positions.get(ownedWife)!.x = centerX + COL_GAP / 2;
+      } else if (ownedHusb) {
+        positions.get(ownedHusb)!.x = centerX - TILE_WIDTH / 2;
+      } else if (ownedWife) {
+        positions.get(ownedWife)!.x = centerX - TILE_WIDTH / 2;
+      }
+    }
+  }
+
+  // The re-anchoring above recomputes a position from scratch, bypassing
+  // the original construction's collision avoidance - so it can land
+  // exactly on top of unrelated content. Nothing else in the tree depends
+  // on exactly where an anchored family's owned spouse(s) end up (their
+  // only child(ren) are already positioned independently of them), so it's
+  // safe to nudge *just those* tiles clear of whatever they now overlap,
+  // without moving anyone else (who might have real dependents relying on
+  // their exact position).
+  const rowsForSafety = new Map<number, string[]>();
+  for (const [id, pos] of positions) {
+    const gen = Math.round(pos.y / ROW_STEP);
+    if (!rowsForSafety.has(gen)) rowsForSafety.set(gen, []);
+    rowsForSafety.get(gen)!.push(id);
+  }
+  for (const ids of rowsForSafety.values()) {
+    const sorted = [...ids].sort((a, b) => positions.get(a)!.x - positions.get(b)!.x);
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const curr = sorted[i];
+      const prevX = positions.get(prev)!.x;
+      const currX = positions.get(curr)!.x;
+      const gap = currX - (prevX + TILE_WIDTH);
+      if (gap >= COL_GAP) continue;
+      const deficit = COL_GAP - gap;
+      if (ownedBy.has(curr)) {
+        positions.get(curr)!.x = currX + deficit;
+      } else if (ownedBy.has(prev)) {
+        positions.get(prev)!.x = prevX - deficit;
+      }
+    }
+  }
 
   // --- Collect final tile positions. ---
   const tiles = new Map<string, TilePosition>();
