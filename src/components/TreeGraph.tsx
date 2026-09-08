@@ -57,23 +57,34 @@ export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGra
     return () => observer.disconnect();
   }, [layout]);
 
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const rect = containerRef.current!.getBoundingClientRect();
-    const pointerX = e.clientX - rect.left;
-    const pointerY = e.clientY - rect.top;
+  // React registers its wheel listener passively, so preventDefault() inside
+  // an onWheel prop is ignored and logs a console error. Attach the listener
+  // ourselves with { passive: false } so zooming doesn't scroll the page.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
 
-    setTransform((t) => {
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const newK = Math.min(4, Math.max(0.08, t.k * factor));
-      const worldX = (pointerX - t.x) / t.k;
-      const worldY = (pointerY - t.y) / t.k;
-      return {
-        k: newK,
-        x: pointerX - worldX * newK,
-        y: pointerY - worldY * newK,
-      };
-    });
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const pointerX = e.clientX - rect.left;
+      const pointerY = e.clientY - rect.top;
+
+      setTransform((t) => {
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        const newK = Math.min(4, Math.max(0.08, t.k * factor));
+        const worldX = (pointerX - t.x) / t.k;
+        const worldY = (pointerY - t.y) / t.k;
+        return {
+          k: newK,
+          x: pointerX - worldX * newK,
+          y: pointerY - worldY * newK,
+        };
+      });
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
   const handleMouseDown = useCallback(
@@ -106,7 +117,6 @@ export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGra
     <div
       ref={containerRef}
       className="tree-graph"
-      onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={stopDrag}
