@@ -5,7 +5,7 @@ export const TILE_WIDTH = 180;
 export const TILE_HEIGHT = 60;
 const COL_GAP = 30;
 const ROW_GAP = 100;
-const SLOT = TILE_WIDTH + COL_GAP;
+const ROW_STEP = TILE_HEIGHT + ROW_GAP;
 
 export interface TilePosition {
   id: string;
@@ -35,15 +35,66 @@ function parseYear(dateStr: string | undefined): number | undefined {
   return m ? Number(m[0]) : undefined;
 }
 
+/** Horizontal extent of a subtree at a given generation row. */
+interface Extent {
+  min: number;
+  max: number;
+}
+type Contour = Map<number, Extent>;
+
+/** A laid-out subtree: its own centre, the row-by-row extent it occupies,
+ * and every individual it contains (so shifting it also moves them all). */
+interface Bounds {
+  centerX: number;
+  contour: Contour;
+  members: string[];
+}
+
+function mergeInto(target: Contour, source: Contour): void {
+  for (const [gen, ext] of source) {
+    const existing = target.get(gen);
+    if (!existing) target.set(gen, { ...ext });
+    else {
+      existing.min = Math.min(existing.min, ext.min);
+      existing.max = Math.max(existing.max, ext.max);
+    }
+  }
+}
+
+function extendRow(contour: Contour, gen: number, min: number, max: number): void {
+  const existing = contour.get(gen);
+  if (!existing) contour.set(gen, { min, max });
+  else {
+    existing.min = Math.min(existing.min, min);
+    existing.max = Math.max(existing.max, max);
+  }
+}
+
+/** Minimum rightward shift `incoming` needs so it doesn't overlap `placed`
+ * (with at least `gap` between them) at any row they both occupy. */
+function computeRequiredShift(placed: Contour, incoming: Contour, gap: number): number {
+  let shift = 0;
+  for (const [gen, inExt] of incoming) {
+    const placedExt = placed.get(gen);
+    if (!placedExt) continue;
+    const required = placedExt.max + gap - inExt.min;
+    if (required > shift) shift = required;
+  }
+  return shift;
+}
+
 /**
- * Lays every individual out on a strict grid: one row per generation, and
- * an x position (in fractional "slot" units) computed the way genealogy
- * charts usually do it - bottom-up, recursively:
- *   - someone with no children of their own gets the next free slot
- *   - a parent is centered exactly over the min/max of their children
- *   - a spouse sits directly beside their partner
- * This keeps children visually underneath their parents instead of being
- * reordered by an independent per-row heuristic.
+ * Lays every individual out on a strict grid: one row per generation. Column
+ * position is computed the way classic tree-drawing algorithms do it
+ * (Reingold-Tilford / Walker-style, the same idea Graphviz's `dot` engine
+ * uses under the hood, which is what tools like Gramps' graph view rely on):
+ * bottom-up, each subtree is laid out on its own starting at a local
+ * origin, tracking the horizontal extent ("contour") it occupies at every
+ * row it spans. Subtrees are then placed left to right, each one shifted
+ * just far enough right to clear the previous ones' contour - shifting a
+ * subtree moves every individual in it together, so a parent centred over
+ * its children never drifts away from them afterwards the way a separate
+ * "fix up overlaps per row" pass would.
  */
 export function computeGridLayout(data: GedcomData): GridLayout {
   const generations = computeGenerations(data);
@@ -52,18 +103,11 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     return { tiles: new Map(), connectors: [], width: 800, height: 600 };
   }
 
-  const xOf = new Map<string, number>();
-  const familyCenter = new Map<string, number>();
+  const positions = new Map<string, { x: number; y: number }>();
+  const personBoundsCache = new Map<string, Bounds>();
+  const familyBoundsCache = new Map<string, Bounds>();
   const visitingFamily = new Set<string>();
-  let nextLeaf = 0;
 
-  const setX = (id: string, x: number) => {
-    if (!xOf.has(id)) xOf.set(id, x);
-  };
-
-  // Chronological ordering (by birth year, falling back to file order)
-  // reads more naturally left-to-right and tends to reduce line crossings,
-  // similar to how genealogy charts usually lay out siblings and marriages.
   const byYear = (a: string, b: string): number => {
     const ya = parseYear(data.individuals.get(a)?.birth?.date);
     const yb = parseYear(data.individuals.get(b)?.birth?.date);
@@ -73,21 +117,45 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     return 0;
   };
 
-  function layoutPerson(id: string): number {
-    const existing = xOf.get(id);
-    if (existing !== undefined) return existing;
-    if (!data.individuals.has(id)) return nextLeaf++;
+  function shiftBounds(b: Bounds, dx: number): void {
+    if (dx === 0) return;
+    b.centerX += dx;
+    for (const ext of b.contour.values()) {
+      ext.min += dx;
+      ext.max += dx;
+    }
+    for (const id of b.members) {
+      const p = positions.get(id);
+      if (p) p.x += dx;
+    }
+  }
 
-    const fams = (data.individuals.get(id)?.fams ?? []).filter((f) => data.families.has(f));
-    if (fams.length === 0) {
-      const x = nextLeaf++;
-      setX(id, x);
-      return x;
+  /** Places subtrees left to right, shifting each one (and everything in
+   * it) just enough to clear the ones already placed. Returns their
+   * combined contour. */
+  function placeLeftToRight(items: Bounds[]): Contour {
+    const combined: Contour = new Map();
+    for (const item of items) {
+      if (combined.size > 0) {
+        const shift = computeRequiredShift(combined, item.contour, COL_GAP);
+        if (shift > 0) shiftBounds(item, shift);
+      }
+      mergeInto(combined, item.contour);
+    }
+    return combined;
+  }
+
+  function layoutPersonBounds(id: string): Bounds {
+    const cached = personBoundsCache.get(id);
+    if (cached) return cached;
+
+    if (!data.individuals.has(id)) {
+      return { centerX: 0, contour: new Map(), members: [] };
     }
 
-    // Marriages in chronological order (by first child's birth year, when
-    // known) so multiple families fan out left-to-right in a stable order.
-    const orderedFams = [...fams].sort((a, b) => {
+    const gen = generations.get(id) ?? 0;
+    const person = data.individuals.get(id)!;
+    const fams = person.fams.filter((f) => data.families.has(f)).sort((a, b) => {
       const firstChildYear = (f: string) => {
         const kids = data.families.get(f)?.children ?? [];
         const years = kids.map((c) => parseYear(data.individuals.get(c)?.birth?.date)).filter((y): y is number => y !== undefined);
@@ -99,63 +167,183 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       return 0;
     });
 
-    const centers = orderedFams.map((f) => layoutFamily(f));
-    const x = (Math.min(...centers) + Math.max(...centers)) / 2;
-    setX(id, x);
-    return xOf.get(id)!;
+    if (fams.length === 0) {
+      // Leaf: no descendants, just their own tile.
+      const x = 0;
+      positions.set(id, { x, y: gen * ROW_STEP });
+      const contour: Contour = new Map([[gen, { min: x, max: x + TILE_WIDTH }]]);
+      const bounds: Bounds = { centerX: x + TILE_WIDTH / 2, contour, members: [id] };
+      personBoundsCache.set(id, bounds);
+      return bounds;
+    }
+
+    // Primary (chronologically first) marriage: laid out normally, which
+    // fixes this person's own tile position.
+    const primaryBounds = layoutFamilyBounds(fams[0]);
+    const contour: Contour = new Map(primaryBounds.contour);
+    const members: string[] = [...primaryBounds.members];
+
+    // Any further marriages (remarriage) can't go through the usual
+    // sibling-style placeLeftToRight against each other, because they all
+    // share this same person as a member - shifting one would incorrectly
+    // drag someone else's already-fixed tile along with it. Instead, each
+    // extra marriage lays out just the *new* spouse and their own
+    // descendants (this person stays put), and is pushed clear of every
+    // marriage already handled for this person so extra spouses/children
+    // don't pile up on top of each other.
+    for (let i = 1; i < fams.length; i++) {
+      const extra = layoutExtraMarriageBounds(fams[i], id, contour);
+      mergeInto(contour, extra.contour);
+      members.push(...extra.members);
+    }
+
+    const ownPos = positions.get(id);
+    const centerX = ownPos ? ownPos.x + TILE_WIDTH / 2 : primaryBounds.centerX;
+
+    const bounds: Bounds = { centerX, contour, members: [...new Set(members)] };
+    personBoundsCache.set(id, bounds);
+    return bounds;
   }
 
-  function layoutFamily(famId: string): number {
-    const existing = familyCenter.get(famId);
-    if (existing !== undefined) return existing;
-    if (visitingFamily.has(famId)) return nextLeaf++; // guard against cyclic/malformed data
+  /** Lays out one additional marriage (2nd, 3rd, ...) for someone whose
+   * primary marriage already fixed their own tile position: places their
+   * children as usual, then the *new* spouse next to them, and shifts that
+   * whole new-spouse-plus-children bundle clear of `avoidContour`
+   * (everything already placed for this person's other marriages). */
+  function layoutExtraMarriageBounds(famId: string, anchorId: string, avoidContour: Contour): Bounds {
+    const fam = data.families.get(famId)!;
+    const newSpouse = fam.husb === anchorId ? fam.wife : fam.husb;
+    const allKids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
+    const freshKids = allKids.filter((c) => !positions.has(c));
+
+    let childrenBoundsList: Bounds[] = [];
+    if (freshKids.length > 0) {
+      childrenBoundsList = freshKids.map((c) => layoutPersonBounds(c));
+      placeLeftToRight(childrenBoundsList);
+    }
+
+    const contour: Contour = new Map();
+    for (const b of childrenBoundsList) mergeInto(contour, b.contour);
+
+    let centerX: number;
+    if (childrenBoundsList.length > 0) {
+      centerX = (childrenBoundsList[0].centerX + childrenBoundsList[childrenBoundsList.length - 1].centerX) / 2;
+    } else if (allKids.length > 0) {
+      const existingXs = allKids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      centerX = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
+    } else {
+      centerX = 0;
+    }
+
+    const members = childrenBoundsList.flatMap((b) => b.members);
+    if (newSpouse && data.individuals.has(newSpouse) && !positions.has(newSpouse)) {
+      const gen = Math.max(generations.get(newSpouse) ?? -Infinity, generations.get(anchorId) ?? -Infinity, 0);
+      const x = centerX - TILE_WIDTH / 2;
+      positions.set(newSpouse, { x, y: gen * ROW_STEP });
+      members.push(newSpouse);
+      extendRow(contour, gen, x, x + TILE_WIDTH);
+    }
+
+    const bounds: Bounds = { centerX, contour, members };
+    const shift = computeRequiredShift(avoidContour, bounds.contour, COL_GAP);
+    if (shift > 0) shiftBounds(bounds, shift);
+    return bounds;
+  }
+
+  function layoutFamilyBounds(famId: string): Bounds {
+    const cached = familyBoundsCache.get(famId);
+    if (cached) return cached;
+    if (visitingFamily.has(famId)) return { centerX: 0, contour: new Map(), members: [] };
     visitingFamily.add(famId);
 
     const fam = data.families.get(famId)!;
-    const kids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
-    // Only let children who aren't already positioned pull this family's
-    // center. A child can already have a position if they were reached via
-    // a different branch first (e.g. their spouse's family, when two
-    // otherwise-separate family lines are linked by marriage) - letting
-    // that foreign position drag this family's parents along would push
-    // them into whatever unrelated space that branch already occupies.
-    const freshKids = kids.filter((c) => !xOf.has(c));
-    const kidXs = freshKids.length > 0 ? freshKids.map((c) => layoutPerson(c)) : [];
+    const allKids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
+    // Only children who aren't already positioned pull this family's
+    // centre. A child can already be positioned if they were reached via a
+    // different branch first (e.g. their spouse's family, when two
+    // otherwise-separate lines are linked by marriage) - letting that
+    // foreign position drag this family along would push it into whatever
+    // unrelated space that branch already occupies.
+    const freshKids = allKids.filter((c) => !positions.has(c));
 
-    let center: number;
-    if (kidXs.length > 0) {
-      center = (Math.min(...kidXs) + Math.max(...kidXs)) / 2;
-    } else if (kids.length > 0) {
-      // Every child here was already positioned via another branch (the
-      // cross-branch-marriage case above). We don't get to *centre* over
-      // them, but there's no reason to dump this family in a far-off,
-      // unrelated leaf slot either - anchor near where those children
-      // already ended up instead of grabbing the next arbitrary slot,
-      // which otherwise tends to land wherever the rest of the tree
-      // happened to reach by that point (often very far away).
-      const existingXs = kids.map((c) => xOf.get(c)!);
-      center = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
+    let childrenBoundsList: Bounds[] = [];
+    if (freshKids.length > 0) {
+      childrenBoundsList = freshKids.map((c) => layoutPersonBounds(c));
+      placeLeftToRight(childrenBoundsList);
+    }
+
+    const contour: Contour = new Map();
+    for (const b of childrenBoundsList) mergeInto(contour, b.contour);
+
+    let coupleCenterX: number;
+    if (childrenBoundsList.length > 0) {
+      coupleCenterX = (childrenBoundsList[0].centerX + childrenBoundsList[childrenBoundsList.length - 1].centerX) / 2;
+    } else if (allKids.length > 0) {
+      // Every child here was already positioned via another branch -
+      // anchor near them instead of an arbitrary, unrelated spot.
+      const existingXs = allKids.map((c) => positions.get(c)!.x + TILE_WIDTH / 2);
+      coupleCenterX = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
     } else {
-      center = nextLeaf++;
+      coupleCenterX = 0;
     }
-    familyCenter.set(famId, center);
 
-    if (fam.husb && fam.wife) {
-      setX(fam.husb, center - 0.5);
-      setX(fam.wife, center + 0.5);
-    } else if (fam.husb) {
-      setX(fam.husb, center);
-    } else if (fam.wife) {
-      setX(fam.wife, center);
+    const members = childrenBoundsList.flatMap((b) => b.members);
+    const husb = fam.husb && data.individuals.has(fam.husb) ? fam.husb : undefined;
+    const wife = fam.wife && data.individuals.has(fam.wife) ? fam.wife : undefined;
+    // Usually husb and wife share a generation already (computeGenerations
+    // aligns spouses whenever it safely can). The one case it deliberately
+    // leaves mismatched is two blood descendants of independent lines
+    // marrying each other, to avoid breaking either side's sibling group.
+    // For *this couple's own row* here, render them together on the later
+    // (deeper) of the two - never earlier, so nobody ends up drawn above
+    // their own true generation.
+    const husbGen = husb ? generations.get(husb) : undefined;
+    const wifeGen = wife ? generations.get(wife) : undefined;
+    const coupleGen = Math.max(husbGen ?? -Infinity, wifeGen ?? -Infinity, 0);
+
+    if (husb && wife) {
+      let husbX = positions.get(husb)?.x;
+      let wifeX = positions.get(wife)?.x;
+      if (husbX === undefined && wifeX === undefined) {
+        husbX = coupleCenterX - TILE_WIDTH - COL_GAP / 2;
+        wifeX = husbX + TILE_WIDTH + COL_GAP;
+      } else if (husbX === undefined) {
+        husbX = coupleCenterX - TILE_WIDTH - COL_GAP / 2;
+      } else if (wifeX === undefined) {
+        wifeX = coupleCenterX + COL_GAP / 2;
+      }
+      if (!positions.has(husb)) {
+        positions.set(husb, { x: husbX!, y: coupleGen * ROW_STEP });
+        members.push(husb);
+      }
+      if (!positions.has(wife)) {
+        positions.set(wife, { x: wifeX!, y: coupleGen * ROW_STEP });
+        members.push(wife);
+      }
+    } else {
+      const single = husb ?? wife;
+      if (single && !positions.has(single)) {
+        positions.set(single, { x: coupleCenterX - TILE_WIDTH / 2, y: coupleGen * ROW_STEP });
+        members.push(single);
+      }
     }
+
+    const rowXs: number[] = [];
+    if (husb && positions.has(husb)) rowXs.push(positions.get(husb)!.x, positions.get(husb)!.x + TILE_WIDTH);
+    if (wife && positions.has(wife)) rowXs.push(positions.get(wife)!.x, positions.get(wife)!.x + TILE_WIDTH);
+    if (rowXs.length > 0) extendRow(contour, coupleGen, Math.min(...rowXs), Math.max(...rowXs));
 
     visitingFamily.delete(famId);
-    return center;
+    const bounds: Bounds = { centerX: coupleCenterX, contour, members };
+    familyBoundsCache.set(famId, bounds);
+    return bounds;
   }
 
   // Process real roots (no known parents) first, chronologically (falling
   // back to name), so the oldest generation reads left-to-right in a
-  // stable, predictable order.
+  // stable, predictable order; then anyone left over (disconnected
+  // branches, or data quirks) in file order. Both go through the same
+  // left-to-right placement as any sibling group.
   const roots = data.individualOrder
     .filter((id) => !(data.individuals.get(id)?.famc ?? []).some((f) => data.families.has(f)))
     .sort((a, b) => {
@@ -163,50 +351,40 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       if (byBirth !== 0) return byBirth;
       return (data.individuals.get(a)?.name ?? '').localeCompare(data.individuals.get(b)?.name ?? '', 'de');
     });
-  for (const id of roots) layoutPerson(id);
 
-  // Catch-all for anyone not reached above (disconnected branches, or data
-  // quirks where a person's parent family was never visited).
-  for (const id of data.individualOrder) layoutPerson(id);
-
-  // --- Resolve any remaining overlaps within a row (naive centering can
-  // place unrelated tiles too close together in complex trees). Only ever
-  // pushes tiles right, preserving left-to-right order. ---
-  const rows = new Map<number, string[]>();
-  for (const id of data.individualOrder) {
-    const g = generations.get(id) ?? 0;
-    if (!rows.has(g)) rows.set(g, []);
-    rows.get(g)!.push(id);
+  const topLevelBounds: Bounds[] = [];
+  for (const id of roots) {
+    // A root (no known parents) can still get positioned before we reach
+    // them here - e.g. they married into a lineage that was already
+    // reached through another, earlier-processed root. Treating them as a
+    // *second* independent top-level entry in that case would shift them
+    // (and everyone hanging off them) a second time on top of wherever
+    // they already correctly ended up.
+    if (positions.has(id)) continue;
+    topLevelBounds.push(layoutPersonBounds(id));
   }
+  for (const id of data.individualOrder) {
+    if (positions.has(id) || !data.individuals.has(id)) continue;
+    topLevelBounds.push(layoutPersonBounds(id));
+  }
+  placeLeftToRight(topLevelBounds);
 
+  // --- Collect final tile positions. ---
   const tiles = new Map<string, TilePosition>();
   let maxX = 0;
-
-  // A row's raw x values can occasionally include a huge, meaningless jump:
-  // a family with no fresh or anchorable children falls back to "next free
-  // leaf slot", whatever that happens to be at that point in the DFS - for
-  // a small disconnected fragment reached late (e.g. after deleting the
-  // person who used to bridge it to the rest of the tree), that can be
-  // hundreds of slots away. So alongside the minimum-gap rule below (never
-  // let tiles overlap), also cap the *maximum* gap between two
-  // consecutive tiles in the same row - real parent/child centering keeps
-  // siblings close together already, so this only ever kicks in for those
-  // arbitrary jumps, not for genuinely wide (but connected) families.
-  const MAX_GAP = SLOT * 2;
-
-  for (const [g, ids] of rows) {
-    const sorted = [...ids].sort((a, b) => xOf.get(a)! - xOf.get(b)!);
-    let minAllowed = -Infinity;
-    let prevX: number | undefined;
-    for (const id of sorted) {
-      let x = xOf.get(id)! * SLOT;
-      if (prevX !== undefined && x > prevX + MAX_GAP) x = prevX + MAX_GAP;
-      if (x < minAllowed) x = minAllowed;
-      minAllowed = x + SLOT;
-      prevX = x;
-      tiles.set(id, { id, generation: g, x, y: g * (TILE_HEIGHT + ROW_GAP) });
-      maxX = Math.max(maxX, x);
-    }
+  let maxGen = 0;
+  for (const [id, pos] of positions) {
+    // Derive the reported generation from where the tile actually ended up
+    // (pos.y is always set as someGeneration * ROW_STEP) rather than
+    // re-reading computeGenerations directly - those two can disagree in
+    // the rare case of two blood descendants of independent lines
+    // marrying, where the couple is deliberately rendered together on the
+    // deeper of their two generations; using the real row here keeps the
+    // reported generation consistent with what's actually drawn.
+    const generation = Math.round(pos.y / ROW_STEP);
+    tiles.set(id, { id, generation, x: pos.x, y: pos.y });
+    maxX = Math.max(maxX, pos.x);
+    maxGen = Math.max(maxGen, generation);
   }
 
   // --- Orthogonal family connectors (spouse line + parent/child bus). ---
@@ -257,7 +435,7 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   }
 
   const width = maxX + TILE_WIDTH + 100;
-  const height = (rows.size + 1) * (TILE_HEIGHT + ROW_GAP) + 100;
+  const height = (maxGen + 1) * ROW_STEP + 100;
 
   return { tiles, connectors, width, height };
 }
