@@ -3,12 +3,14 @@ import { parseGedcom } from './gedcom/parser';
 import { computeGridLayout } from './gedcom/gridLayout';
 import { deletePeople } from './gedcom/mutate';
 import { serializeGedcom, deserializeGedcom } from './gedcom/serialize';
+import { exportGedcom } from './gedcom/exportGedcom';
 import type { GedcomData } from './gedcom/types';
 import { ImportScreen } from './components/ImportScreen';
 import { TreeGraph } from './components/TreeGraph';
 import { PersonListTable } from './components/PersonListTable';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { loadGedcom, saveGedcom, clearGedcom } from './storage/localStore';
+import { downloadTextFile } from './utils/download';
 
 type View = 'graph' | 'list';
 
@@ -91,6 +93,13 @@ function App() {
     setPendingDeletion({ ids: [...selectedIds], message: `${selectedIds.size} Personen wirklich löschen?` });
   };
 
+  const handleExport = () => {
+    if (!data) return;
+    const text = exportGedcom(data);
+    const base = fileName.replace(/\.ged$/i, '') || 'stammbaum';
+    downloadTextFile(text, `${base}_export.ged`);
+  };
+
   const confirmDeletion = () => {
     if (!data || !pendingDeletion) return;
     const next = deletePeople(data, pendingDeletion.ids);
@@ -141,6 +150,9 @@ function App() {
               Liste
             </button>
           </div>
+          <button className="secondary" onClick={handleExport}>
+            Exportieren
+          </button>
           <button className="secondary" onClick={handleReset}>
             Andere Datei importieren
           </button>

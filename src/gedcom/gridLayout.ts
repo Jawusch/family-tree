@@ -182,13 +182,28 @@ export function computeGridLayout(data: GedcomData): GridLayout {
   const tiles = new Map<string, TilePosition>();
   let maxX = 0;
 
+  // A row's raw x values can occasionally include a huge, meaningless jump:
+  // a family with no fresh or anchorable children falls back to "next free
+  // leaf slot", whatever that happens to be at that point in the DFS - for
+  // a small disconnected fragment reached late (e.g. after deleting the
+  // person who used to bridge it to the rest of the tree), that can be
+  // hundreds of slots away. So alongside the minimum-gap rule below (never
+  // let tiles overlap), also cap the *maximum* gap between two
+  // consecutive tiles in the same row - real parent/child centering keeps
+  // siblings close together already, so this only ever kicks in for those
+  // arbitrary jumps, not for genuinely wide (but connected) families.
+  const MAX_GAP = SLOT * 2;
+
   for (const [g, ids] of rows) {
     const sorted = [...ids].sort((a, b) => xOf.get(a)! - xOf.get(b)!);
     let minAllowed = -Infinity;
+    let prevX: number | undefined;
     for (const id of sorted) {
       let x = xOf.get(id)! * SLOT;
+      if (prevX !== undefined && x > prevX + MAX_GAP) x = prevX + MAX_GAP;
       if (x < minAllowed) x = minAllowed;
       minAllowed = x + SLOT;
+      prevX = x;
       tiles.set(id, { id, generation: g, x, y: g * (TILE_HEIGHT + ROW_GAP) });
       maxX = Math.max(maxX, x);
     }
