@@ -1,0 +1,395 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-alt: #1e222b;
+  --border: #2a2f3a;
+  --text: #e8eaed;
+  --text-muted: #9aa2af;
+  --accent: #5b8def;
+  --accent-soft: rgba(91, 141, 239, 0.18);
+  --male: #4f8ff0;
+  --female: #e05fa0;
+  --unknown: #7c8794;
+  --danger: #e0645f;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+/* --- Import screen --- */
+
+.import-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.import-card {
+  max-width: 480px;
+  width: 100%;
+  text-align: center;
+}
+
+.import-card h1 {
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin-bottom: 28px;
+}
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 48px 24px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--panel);
+}
+
+.dropzone:hover,
+.dropzone--active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.error-text {
+  color: var(--danger);
+  margin-top: 16px;
+}
+
+.app-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+/* --- App shell --- */
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.toolbar-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toolbar-title .muted {
+  font-size: 0.85em;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.view-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.view-switch button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.view-switch button.active {
+  background: var(--accent);
+  color: white;
+}
+
+button {
+  font: inherit;
+}
+
+button.secondary {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button.secondary:hover {
+  border-color: var(--accent);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.warnings-banner {
+  background: rgba(224, 100, 95, 0.12);
+  color: var(--danger);
+  padding: 8px 20px;
+  font-size: 0.9em;
+  border-bottom: 1px solid var(--border);
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.main-view {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+/* --- Tree graph --- */
+
+.tree-graph {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  background:
+    radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0) 0 0/24px 24px;
+}
+
+.tree-graph:active {
+  cursor: grabbing;
+}
+
+.tree-graph svg {
+  display: block;
+}
+
+.link {
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.link--spouse {
+  stroke-dasharray: 4 3;
+}
+
+.link--highlight {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.node {
+  cursor: pointer;
+}
+
+.node circle {
+  fill: var(--unknown);
+  stroke: var(--panel);
+  stroke-width: 2;
+  transition: opacity 0.15s;
+}
+
+.node--M circle {
+  fill: var(--male);
+}
+
+.node--F circle {
+  fill: var(--female);
+}
+
+.node--selected circle {
+  stroke: white;
+  stroke-width: 3;
+}
+
+.node--dimmed {
+  opacity: 0.25;
+}
+
+.node-label {
+  fill: var(--text);
+  font-size: 12px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.node-years {
+  fill: var(--text-muted);
+  font-size: 10px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* --- Person list --- */
+
+.person-list {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+}
+
+.person-list-search {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.person-list-table-wrap {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.person-list-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.person-list-table th,
+.person-list-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.person-list-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.person-list-table tbody tr {
+  cursor: pointer;
+}
+
+.person-list-table tbody tr:hover {
+  background: var(--panel-alt);
+}
+
+.person-list-table tbody tr.selected {
+  background: var(--accent-soft);
+}
+
+.empty-hint {
+  padding: 16px;
+  color: var(--text-muted);
+}
+
+/* --- Person details panel --- */
+
+.person-details {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+  position: relative;
+}
+
+.person-details h2 {
+  margin: 0 0 4px;
+  padding-right: 24px;
+}
+
+.person-details h3 {
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 16px 0 4px;
+}
+
+.person-details dl {
+  margin: 12px 0;
+}
+
+.person-details dt {
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.person-details dd {
+  margin: 0 0 8px;
+}
+
+.close-button {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.4em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close-button:hover {
+  color: var(--text);
+}
+
+.muted {
+  color: var(--text-muted);
+}
