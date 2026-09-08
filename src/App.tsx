@@ -7,9 +7,15 @@ import type { GedcomData } from './gedcom/types';
 import { ImportScreen } from './components/ImportScreen';
 import { TreeGraph } from './components/TreeGraph';
 import { PersonListTable } from './components/PersonListTable';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { loadGedcom, saveGedcom, clearGedcom } from './storage/localStore';
 
 type View = 'graph' | 'list';
+
+interface PendingDeletion {
+  ids: string[];
+  message: string;
+}
 
 function App() {
   const [data, setData] = useState<GedcomData | null>(null);
@@ -18,6 +24,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | undefined>();
   const [restoring, setRestoring] = useState(true);
+  const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null);
 
   useEffect(() => {
     loadGedcom().then((stored) => {
@@ -76,24 +83,25 @@ function App() {
   const handleDeleteOne = (id: string) => {
     if (!data) return;
     const person = data.individuals.get(id);
-    if (!window.confirm(`„${person?.name ?? id}“ wirklich löschen?`)) return;
-    const next = deletePeople(data, [id]);
-    setData(next);
-    setSelectedIds((prev) => {
-      const s = new Set(prev);
-      s.delete(id);
-      return s;
-    });
-    persist(next, fileName);
+    setPendingDeletion({ ids: [id], message: `„${person?.name ?? id}“ wirklich löschen?` });
   };
 
   const handleDeleteSelected = () => {
     if (!data || selectedIds.size === 0) return;
-    if (!window.confirm(`${selectedIds.size} Personen wirklich löschen?`)) return;
-    const next = deletePeople(data, selectedIds);
+    setPendingDeletion({ ids: [...selectedIds], message: `${selectedIds.size} Personen wirklich löschen?` });
+  };
+
+  const confirmDeletion = () => {
+    if (!data || !pendingDeletion) return;
+    const next = deletePeople(data, pendingDeletion.ids);
     setData(next);
-    setSelectedIds(new Set());
+    setSelectedIds((prev) => {
+      const s = new Set(prev);
+      for (const id of pendingDeletion.ids) s.delete(id);
+      return s;
+    });
     persist(next, fileName);
+    setPendingDeletion(null);
   };
 
   if (restoring) {
@@ -165,6 +173,14 @@ function App() {
           )}
         </div>
       </main>
+
+      {pendingDeletion && (
+        <ConfirmDialog
+          message={pendingDeletion.message}
+          onConfirm={confirmDeletion}
+          onCancel={() => setPendingDeletion(null)}
+        />
+      )}
     </div>
   );
 }
