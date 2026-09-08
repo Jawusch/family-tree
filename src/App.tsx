@@ -82,12 +82,6 @@ function App() {
     });
   };
 
-  const handleDeleteOne = (id: string) => {
-    if (!data) return;
-    const person = data.individuals.get(id);
-    setPendingDeletion({ ids: [id], message: `„${person?.name ?? id}“ wirklich löschen?` });
-  };
-
   const handleDeleteSelected = () => {
     if (!data || selectedIds.size === 0) return;
     setPendingDeletion({ ids: [...selectedIds], message: `${selectedIds.size} Personen wirklich löschen?` });
@@ -168,20 +162,9 @@ function App() {
       <main className="main-content">
         <div className="main-view">
           {view === 'graph' ? (
-            <TreeGraph
-              data={data}
-              layout={layout}
-              selectedIds={selectedIds}
-              onToggleSelect={toggleSelect}
-              onDeleteOne={handleDeleteOne}
-            />
+            <TreeGraph data={data} layout={layout} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
           ) : (
-            <PersonListTable
-              data={data}
-              selectedIds={selectedIds}
-              onToggleSelect={toggleSelect}
-              onDeleteOne={handleDeleteOne}
-            />
+            <PersonListTable data={data} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
           )}
         </div>
       </main>

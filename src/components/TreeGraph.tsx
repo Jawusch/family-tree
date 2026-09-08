@@ -7,7 +7,6 @@ interface TreeGraphProps {
   layout: GridLayout;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
-  onDeleteOne: (id: string) => void;
 }
 
 interface Transform {
@@ -22,7 +21,7 @@ function truncate(name: string, max = 22): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name;
 }
 
-export function TreeGraph({ data, layout, selectedIds, onToggleSelect, onDeleteOne }: TreeGraphProps) {
+export function TreeGraph({ data, layout, selectedIds, onToggleSelect }: TreeGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, k: 1 });
   const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
@@ -155,18 +154,6 @@ export function TreeGraph({ data, layout, selectedIds, onToggleSelect, onDeleteO
                 <text className="tile-dates" x={TILE_WIDTH / 2} y={TILE_HEIGHT / 2 + 14}>
                   {years || '—'}
                 </text>
-                <g
-                  className="tile-delete"
-                  transform={`translate(${TILE_WIDTH - 18}, 2)`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteOne(pos.id);
-                  }}
-                >
-                  <circle r={9} cx={8} cy={8} />
-                  <line x1={4.5} y1={4.5} x2={11.5} y2={11.5} />
-                  <line x1={11.5} y1={4.5} x2={4.5} y2={11.5} />
-                </g>
               </g>
             );
           })}

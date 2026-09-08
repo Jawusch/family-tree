@@ -5,10 +5,9 @@ interface PersonListTableProps {
   data: GedcomData;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
-  onDeleteOne: (id: string) => void;
 }
 
-export function PersonListTable({ data, selectedIds, onToggleSelect, onDeleteOne }: PersonListTableProps) {
+export function PersonListTable({ data, selectedIds, onToggleSelect }: PersonListTableProps) {
   const [query, setQuery] = useState('');
 
   const rows = useMemo(() => {
@@ -38,7 +37,6 @@ export function PersonListTable({ data, selectedIds, onToggleSelect, onDeleteOne
               <th>Gestorben</th>
               <th>Eltern</th>
               <th>Kinder</th>
-              <th className="col-actions"></th>
             </tr>
           </thead>
           <tbody>
@@ -64,11 +62,6 @@ export function PersonListTable({ data, selectedIds, onToggleSelect, onDeleteOne
                   <td>{p.death?.date ?? '–'}</td>
                   <td className="muted">{parentNames || '–'}</td>
                   <td className="muted">{childCount || '–'}</td>
-                  <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="row-delete" onClick={() => onDeleteOne(p.id)} aria-label={`${p.name} löschen`}>
-                      ×
-                    </button>
-                  </td>
                 </tr>
               );
             })}

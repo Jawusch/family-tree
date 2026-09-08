@@ -273,36 +273,6 @@ button.danger:hover {
   pointer-events: none;
 }
 
-.tile-delete {
-  cursor: pointer;
-  opacity: 0.45;
-  transition: opacity 0.1s;
-}
-
-.tile:hover .tile-delete,
-.tile-delete:hover {
-  opacity: 1;
-}
-
-.tile-delete circle {
-  fill: white;
-  stroke: var(--border);
-}
-
-.tile-delete:hover circle {
-  fill: var(--danger);
-  stroke: var(--danger);
-}
-
-.tile-delete line {
-  stroke: var(--text-muted);
-  stroke-width: 1.5;
-}
-
-.tile-delete:hover line {
-  stroke: white;
-}
-
 /* --- Person list --- */
 
 .person-list {
@@ -349,8 +319,7 @@ button.danger:hover {
   z-index: 1;
 }
 
-.person-list-table .col-check,
-.person-list-table .col-actions {
+.person-list-table .col-check {
   width: 1%;
 }
 
@@ -364,23 +333,6 @@ button.danger:hover {
 
 .person-list-table tbody tr.selected {
   background: var(--accent-soft);
-}
-
-.row-delete {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.row-delete:hover {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: white;
 }
 
 .empty-hint {
