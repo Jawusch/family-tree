@@ -121,7 +121,23 @@ export function computeGridLayout(data: GedcomData): GridLayout {
     // them into whatever unrelated space that branch already occupies.
     const freshKids = kids.filter((c) => !xOf.has(c));
     const kidXs = freshKids.length > 0 ? freshKids.map((c) => layoutPerson(c)) : [];
-    const center = kidXs.length > 0 ? (Math.min(...kidXs) + Math.max(...kidXs)) / 2 : nextLeaf++;
+
+    let center: number;
+    if (kidXs.length > 0) {
+      center = (Math.min(...kidXs) + Math.max(...kidXs)) / 2;
+    } else if (kids.length > 0) {
+      // Every child here was already positioned via another branch (the
+      // cross-branch-marriage case above). We don't get to *centre* over
+      // them, but there's no reason to dump this family in a far-off,
+      // unrelated leaf slot either - anchor near where those children
+      // already ended up instead of grabbing the next arbitrary slot,
+      // which otherwise tends to land wherever the rest of the tree
+      // happened to reach by that point (often very far away).
+      const existingXs = kids.map((c) => xOf.get(c)!);
+      center = (Math.min(...existingXs) + Math.max(...existingXs)) / 2;
+    } else {
+      center = nextLeaf++;
+    }
     familyCenter.set(famId, center);
 
     if (fam.husb && fam.wife) {

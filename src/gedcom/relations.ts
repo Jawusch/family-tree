@@ -161,14 +161,17 @@ export function computeGenerations(data: GedcomData): Map<string, number> {
   }
   for (const id of unresolved) gen.set(id, 0);
 
-  // Two things still need reconciling, and doing them independently fights
-  // itself (a child-vs-parent bump can knock a couple apart again), so they
-  // run together until nothing moves:
+  // Three things still need reconciling, and doing them independently
+  // fights itself (e.g. a child-vs-parent bump can knock a couple apart
+  // again), so they run together until nothing moves:
   //  - a child must never end up level with or above its parents (rounding
   //    can occasionally place consecutive, closely-spaced generations in
   //    the same bucket)
+  //  - full siblings (same two parents) always land on the same row - this
+  //    takes priority over the rule below, since sharing parents is a hard
+  //    fact but "spouses are the same age" is only a usual assumption
   //  - spouses land on the same row (their own bucketed years might differ
-  //    by one, or one of them just got bumped by the rule above)
+  //    by one, or one of them just got bumped by one of the rules above)
   // Every adjustment here only ever moves someone to a *later* generation,
   // and each bump is a single step tied to an actual neighbour already on
   // the grid - so unlike the old ancestor-chain approach, drift can't run
@@ -190,6 +193,18 @@ export function computeGenerations(data: GedcomData): Map<string, number> {
           changed = true;
         }
       }
+
+      const siblings = fam.children.filter((c) => gen.has(c));
+      if (siblings.length > 1) {
+        const shared = Math.max(...siblings.map((c) => gen.get(c)!));
+        for (const c of siblings) {
+          if (gen.get(c)! !== shared) {
+            gen.set(c, shared);
+            changed = true;
+          }
+        }
+      }
+
       const parentGen = parents.length ? Math.max(...parents.map((p) => gen.get(p)!)) : undefined;
       if (parentGen !== undefined) {
         for (const c of fam.children) {
