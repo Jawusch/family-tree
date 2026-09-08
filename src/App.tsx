@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { parseGedcom } from './gedcom/parser';
-import { computeLayout } from './gedcom/layout';
+import { computeGridLayout } from './gedcom/gridLayout';
+import { deletePeople } from './gedcom/mutate';
+import { serializeGedcom, deserializeGedcom } from './gedcom/serialize';
 import type { GedcomData } from './gedcom/types';
 import { ImportScreen } from './components/ImportScreen';
 import { TreeGraph } from './components/TreeGraph';
 import { PersonListTable } from './components/PersonListTable';
-import { PersonDetails } from './components/PersonDetails';
-import { loadLastGedcom, saveLastGedcom, clearLastGedcom } from './storage/localStore';
+import { loadGedcom, saveGedcom, clearGedcom } from './storage/localStore';
 
 type View = 'graph' | 'list';
 
@@ -14,16 +15,15 @@ function App() {
   const [data, setData] = useState<GedcomData | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [view, setView] = useState<View>('graph');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | undefined>();
   const [restoring, setRestoring] = useState(true);
 
   useEffect(() => {
-    loadLastGedcom().then((stored) => {
+    loadGedcom().then((stored) => {
       if (stored) {
         try {
-          const parsed = parseGedcom(stored.text, stored.fileName);
-          setData(parsed);
+          setData(deserializeGedcom(stored));
           setFileName(stored.fileName);
         } catch {
           // ignore corrupt cache, user can just re-import
@@ -32,6 +32,10 @@ function App() {
       setRestoring(false);
     });
   }, []);
+
+  const persist = (nextData: GedcomData, name: string) => {
+    void saveGedcom(serializeGedcom(nextData, name, new Date().toISOString()));
+  };
 
   const handleFileText = (text: string, name: string) => {
     try {
@@ -43,21 +47,53 @@ function App() {
       setError(undefined);
       setData(parsed);
       setFileName(name);
-      setSelectedId(null);
-      void saveLastGedcom({ fileName: name, text, importedAt: new Date().toISOString() });
+      setSelectedIds(new Set());
+      persist(parsed, name);
     } catch {
       setError('Die Datei konnte nicht gelesen werden. Bitte prüfe, ob es sich um eine gültige GEDCOM-Datei handelt.');
     }
   };
 
-  const layout = useMemo(() => (data ? computeLayout(data) : null), [data]);
+  const layout = useMemo(() => (data ? computeGridLayout(data) : null), [data]);
 
   const handleReset = () => {
     setData(null);
     setFileName('');
-    setSelectedId(null);
+    setSelectedIds(new Set());
     setError(undefined);
-    void clearLastGedcom();
+    void clearGedcom();
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleDeleteOne = (id: string) => {
+    if (!data) return;
+    const person = data.individuals.get(id);
+    if (!window.confirm(`„${person?.name ?? id}“ wirklich löschen?`)) return;
+    const next = deletePeople(data, [id]);
+    setData(next);
+    setSelectedIds((prev) => {
+      const s = new Set(prev);
+      s.delete(id);
+      return s;
+    });
+    persist(next, fileName);
+  };
+
+  const handleDeleteSelected = () => {
+    if (!data || selectedIds.size === 0) return;
+    if (!window.confirm(`${selectedIds.size} Personen wirklich löschen?`)) return;
+    const next = deletePeople(data, selectedIds);
+    setData(next);
+    setSelectedIds(new Set());
+    persist(next, fileName);
   };
 
   if (restoring) {
@@ -78,6 +114,17 @@ function App() {
           </span>
         </div>
         <div className="toolbar-actions">
+          {selectedIds.size > 0 && (
+            <>
+              <span className="muted">{selectedIds.size} ausgewählt</span>
+              <button className="danger" onClick={handleDeleteSelected}>
+                Ausgewählte löschen
+              </button>
+              <button className="secondary" onClick={() => setSelectedIds(new Set())}>
+                Auswahl aufheben
+              </button>
+            </>
+          )}
           <div className="view-switch">
             <button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')}>
               Baum
@@ -101,19 +148,22 @@ function App() {
       <main className="main-content">
         <div className="main-view">
           {view === 'graph' ? (
-            <TreeGraph data={data} layout={layout} selectedId={selectedId} onSelect={setSelectedId} />
+            <TreeGraph
+              data={data}
+              layout={layout}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onDeleteOne={handleDeleteOne}
+            />
           ) : (
-            <PersonListTable data={data} selectedId={selectedId} onSelect={setSelectedId} />
+            <PersonListTable
+              data={data}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onDeleteOne={handleDeleteOne}
+            />
           )}
         </div>
-        {selectedId && (
-          <PersonDetails
-            data={data}
-            personId={selectedId}
-            onSelect={setSelectedId}
-            onClose={() => setSelectedId(null)}
-          />
-        )}
       </main>
     </div>
   );

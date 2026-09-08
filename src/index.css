@@ -1,17 +1,21 @@
 :root {
-  color-scheme: light dark;
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-alt: #1e222b;
-  --border: #2a2f3a;
-  --text: #e8eaed;
-  --text-muted: #9aa2af;
-  --accent: #5b8def;
-  --accent-soft: rgba(91, 141, 239, 0.18);
-  --male: #4f8ff0;
-  --female: #e05fa0;
-  --unknown: #7c8794;
-  --danger: #e0645f;
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #f7f7f8;
+  --panel-alt: #eef0f2;
+  --border: #d7dade;
+  --text: #1c1f24;
+  --text-muted: #6b7280;
+  --accent: #2f6fed;
+  --accent-soft: rgba(47, 111, 237, 0.12);
+  --male: #eaf1ff;
+  --male-border: #a9c6f7;
+  --female: #ffeef5;
+  --female-border: #f3aecb;
+  --unknown: #f1f2f4;
+  --unknown-border: #cfd3d9;
+  --danger: #d0433f;
+  --danger-soft: rgba(208, 67, 63, 0.1);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -45,6 +49,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  background: var(--bg);
 }
 
 .import-card {
@@ -95,6 +100,7 @@ body {
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+  background: var(--bg);
 }
 
 /* --- App shell --- */
@@ -103,6 +109,7 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
 }
 
 .toolbar {
@@ -140,7 +147,7 @@ body {
 }
 
 .view-switch button {
-  background: transparent;
+  background: var(--bg);
   border: none;
   color: var(--text-muted);
   padding: 8px 16px;
@@ -157,7 +164,7 @@ button {
 }
 
 button.secondary {
-  background: var(--panel-alt);
+  background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 8px 14px;
@@ -169,18 +176,21 @@ button.secondary:hover {
   border-color: var(--accent);
 }
 
-.link-button {
-  background: none;
-  border: none;
-  color: var(--accent);
+button.danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: white;
+  padding: 8px 14px;
+  border-radius: 8px;
   cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-decoration: underline;
+}
+
+button.danger:hover {
+  opacity: 0.9;
 }
 
 .warnings-banner {
-  background: rgba(224, 100, 95, 0.12);
+  background: rgba(208, 67, 63, 0.08);
   color: var(--danger);
   padding: 8px 20px;
   font-size: 0.9em;
@@ -206,8 +216,7 @@ button.secondary:hover {
   height: 100%;
   overflow: hidden;
   cursor: grab;
-  background:
-    radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0) 0 0/24px 24px;
+  background: var(--bg);
 }
 
 .tree-graph:active {
@@ -218,60 +227,79 @@ button.secondary:hover {
   display: block;
 }
 
-.link {
-  stroke: var(--border);
+.connector-line {
+  stroke: #9aa1ab;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.tile {
+  cursor: pointer;
+}
+
+.tile-rect {
+  fill: var(--unknown);
+  stroke: var(--unknown-border);
   stroke-width: 1.5;
 }
 
-.link--spouse {
-  stroke-dasharray: 4 3;
+.tile--M .tile-rect {
+  fill: var(--male);
+  stroke: var(--male-border);
 }
 
-.link--highlight {
+.tile--F .tile-rect {
+  fill: var(--female);
+  stroke: var(--female-border);
+}
+
+.tile--selected .tile-rect {
   stroke: var(--accent);
   stroke-width: 2.5;
 }
 
-.node {
-  cursor: pointer;
-}
-
-.node circle {
-  fill: var(--unknown);
-  stroke: var(--panel);
-  stroke-width: 2;
-  transition: opacity 0.15s;
-}
-
-.node--M circle {
-  fill: var(--male);
-}
-
-.node--F circle {
-  fill: var(--female);
-}
-
-.node--selected circle {
-  stroke: white;
-  stroke-width: 3;
-}
-
-.node--dimmed {
-  opacity: 0.25;
-}
-
-.node-label {
+.tile-name {
   fill: var(--text);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   text-anchor: middle;
   pointer-events: none;
 }
 
-.node-years {
+.tile-dates {
   fill: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   text-anchor: middle;
   pointer-events: none;
+}
+
+.tile-delete {
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.tile:hover .tile-delete {
+  opacity: 1;
+}
+
+.tile-delete circle {
+  fill: white;
+  stroke: var(--border);
+}
+
+.tile-delete:hover circle {
+  fill: var(--danger);
+  stroke: var(--danger);
+}
+
+.tile-delete line {
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+
+.tile-delete:hover line {
+  stroke: white;
 }
 
 /* --- Person list --- */
@@ -281,13 +309,14 @@ button.secondary:hover {
   display: flex;
   flex-direction: column;
   padding: 16px 20px;
+  background: var(--bg);
 }
 
 .person-list-search {
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg);
   color: var(--text);
   margin-bottom: 12px;
 }
@@ -319,75 +348,43 @@ button.secondary:hover {
   z-index: 1;
 }
 
+.person-list-table .col-check,
+.person-list-table .col-actions {
+  width: 1%;
+}
+
 .person-list-table tbody tr {
   cursor: pointer;
 }
 
 .person-list-table tbody tr:hover {
-  background: var(--panel-alt);
+  background: var(--panel);
 }
 
 .person-list-table tbody tr.selected {
   background: var(--accent-soft);
 }
 
+.row-delete {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.row-delete:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
 .empty-hint {
   padding: 16px;
   color: var(--text-muted);
-}
-
-/* --- Person details panel --- */
-
-.person-details {
-  width: 320px;
-  flex-shrink: 0;
-  background: var(--panel);
-  border-left: 1px solid var(--border);
-  padding: 20px;
-  overflow-y: auto;
-  position: relative;
-}
-
-.person-details h2 {
-  margin: 0 0 4px;
-  padding-right: 24px;
-}
-
-.person-details h3 {
-  font-size: 0.8em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-  margin: 16px 0 4px;
-}
-
-.person-details dl {
-  margin: 12px 0;
-}
-
-.person-details dt {
-  font-size: 0.8em;
-  color: var(--text-muted);
-}
-
-.person-details dd {
-  margin: 0 0 8px;
-}
-
-.close-button {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 1.4em;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.close-button:hover {
-  color: var(--text);
 }
 
 .muted {

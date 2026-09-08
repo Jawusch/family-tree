@@ -3,17 +3,16 @@ import type { GedcomData } from '../gedcom/types';
 
 interface PersonListTableProps {
   data: GedcomData;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onDeleteOne: (id: string) => void;
 }
 
-export function PersonListTable({ data, selectedId, onSelect }: PersonListTableProps) {
+export function PersonListTable({ data, selectedIds, onToggleSelect, onDeleteOne }: PersonListTableProps) {
   const [query, setQuery] = useState('');
 
   const rows = useMemo(() => {
-    const all = data.individualOrder
-      .map((id) => data.individuals.get(id)!)
-      .filter(Boolean);
+    const all = data.individualOrder.map((id) => data.individuals.get(id)!).filter(Boolean);
     if (!query.trim()) return all;
     const q = query.trim().toLowerCase();
     return all.filter((p) => p.name.toLowerCase().includes(q));
@@ -32,12 +31,14 @@ export function PersonListTable({ data, selectedId, onSelect }: PersonListTableP
         <table className="person-list-table">
           <thead>
             <tr>
+              <th className="col-check"></th>
               <th>Name</th>
               <th>Geschlecht</th>
               <th>Geboren</th>
               <th>Gestorben</th>
               <th>Eltern</th>
               <th>Kinder</th>
+              <th className="col-actions"></th>
             </tr>
           </thead>
           <tbody>
@@ -50,19 +51,24 @@ export function PersonListTable({ data, selectedId, onSelect }: PersonListTableP
                 .join(', ');
               const spouseFams = p.fams.map((id) => data.families.get(id)).filter(Boolean);
               const childCount = new Set(spouseFams.flatMap((f) => f!.children)).size;
+              const isSelected = selectedIds.has(p.id);
 
               return (
-                <tr
-                  key={p.id}
-                  className={p.id === selectedId ? 'selected' : ''}
-                  onClick={() => onSelect(p.id)}
-                >
+                <tr key={p.id} className={isSelected ? 'selected' : ''} onClick={() => onToggleSelect(p.id)}>
+                  <td className="col-check" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} />
+                  </td>
                   <td>{p.name}</td>
                   <td>{p.sex === 'M' ? '♂' : p.sex === 'F' ? '♀' : '–'}</td>
                   <td>{p.birth?.date ?? '–'}</td>
                   <td>{p.death?.date ?? '–'}</td>
                   <td className="muted">{parentNames || '–'}</td>
                   <td className="muted">{childCount || '–'}</td>
+                  <td className="col-actions" onClick={(e) => e.stopPropagation()}>
+                    <button className="row-delete" onClick={() => onDeleteOne(p.id)} aria-label={`${p.name} löschen`}>
+                      ×
+                    </button>
+                  </td>
                 </tr>
               );
             })}
