@@ -402,8 +402,30 @@ export function computeGridLayout(data: GedcomData): GridLayout {
       const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
       const y = leftPos.y + TILE_HEIGHT / 2;
       spouseLine = { x1: leftPos.x + TILE_WIDTH, y1: y, x2: rightPos.x, y2: y };
-      coupleCenterX = (husbPos.x + wifePos.x) / 2 + TILE_WIDTH / 2;
       parentBottomY = Math.max(husbPos.y, wifePos.y) + TILE_HEIGHT;
+
+      const gapBetween = rightPos.x - (leftPos.x + TILE_WIDTH);
+      if (gapBetween <= COL_GAP + 1) {
+        // The usual case: spouses sit right next to each other, so the
+        // children's bus drops from the midpoint between them.
+        coupleCenterX = (husbPos.x + wifePos.x) / 2 + TILE_WIDTH / 2;
+      } else {
+        // A remarriage bracket: someone married more than once can only
+        // sit tile-adjacent to two of their partners at most, so the
+        // others end up further along the row, with other people's tiles
+        // in between (the horizontal line still visually connects them,
+        // running behind those tiles). The pair's midpoint would then
+        // land nowhere near either parent or their actual children, so
+        // anchor the bus on whichever parent the children are actually
+        // next to instead.
+        const childXs = childPositions.map((c) => c.x + TILE_WIDTH / 2);
+        const kidsCenter = childXs.length
+          ? childXs.reduce((a, b) => a + b, 0) / childXs.length
+          : (husbPos.x + wifePos.x) / 2 + TILE_WIDTH / 2;
+        const husbCenter = husbPos.x + TILE_WIDTH / 2;
+        const wifeCenter = wifePos.x + TILE_WIDTH / 2;
+        coupleCenterX = Math.abs(husbCenter - kidsCenter) <= Math.abs(wifeCenter - kidsCenter) ? husbCenter : wifeCenter;
+      }
     } else if (husbPos || wifePos) {
       const p = (husbPos ?? wifePos)!;
       coupleCenterX = p.x + TILE_WIDTH / 2;
