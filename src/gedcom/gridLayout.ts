@@ -98,6 +98,26 @@ function computeRequiredShift(placed: Contour, incoming: Contour, gap: number): 
   return shift;
 }
 
+/** The position closest to `idealLeft` where a block `width` wide fits into
+ * a row without coming within `gap` of anything already sitting there. */
+function fitBlock(idealLeft: number, width: number, occupied: Extent[], gap = COL_GAP): number {
+  const clear = (x: number) =>
+    occupied.every((t) => x + width + gap <= t.min + 0.5 || x >= t.max + gap - 0.5);
+  if (clear(idealLeft)) return idealLeft;
+
+  let best: number | undefined;
+  for (const t of occupied) {
+    // Flush against either side of whatever is in the way.
+    for (const candidate of [t.max + gap, t.min - gap - width]) {
+      if (!clear(candidate)) continue;
+      if (best === undefined || Math.abs(candidate - idealLeft) < Math.abs(best - idealLeft)) {
+        best = candidate;
+      }
+    }
+  }
+  return best ?? idealLeft;
+}
+
 const CORNER_RADIUS = 8;
 
 /** Builds an SVG path through `points` (each consecutive pair horizontal or
@@ -463,14 +483,29 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
       // re-centring.
       const ownedHusb = fam.husb && ownedBy.get(fam.husb) === famId ? fam.husb : undefined;
       const ownedWife = fam.wife && ownedBy.get(fam.wife) === famId ? fam.wife : undefined;
-      if (ownedHusb && ownedWife) {
-        positions.get(ownedHusb)!.x = centerX - wOf(ownedHusb) - COL_GAP / 2;
-        positions.get(ownedWife)!.x = centerX + COL_GAP / 2;
-      } else if (ownedHusb) {
-        positions.get(ownedHusb)!.x = centerX - wOf(ownedHusb) / 2;
-      } else if (ownedWife) {
-        positions.get(ownedWife)!.x = centerX - wOf(ownedWife) / 2;
+      if (!ownedHusb && !ownedWife) continue;
+
+      // The spouses this family owns are re-placed as one block, into the
+      // nearest gap that actually has room for them. Dropping each of them
+      // separately onto the children's midpoint reads badly whenever a
+      // neighbouring couple centres on the very next child: the two pairs
+      // interleave, and each marriage line then has to reach across the
+      // other couple's tile, leaving two lines stacked in the same row.
+      const row = Math.round(positions.get(ownedHusb ?? ownedWife!)!.y / rowStep);
+      const occupied: Extent[] = [];
+      for (const [id, p] of positions) {
+        if (id === ownedHusb || id === ownedWife) continue;
+        if (Math.round(p.y / rowStep) === row) occupied.push({ min: p.x, max: p.x + wOf(id) });
       }
+
+      const blockWidth =
+        ownedHusb && ownedWife
+          ? wOf(ownedHusb) + COL_GAP + wOf(ownedWife)
+          : wOf(ownedHusb ?? ownedWife);
+      const left = fitBlock(centerX - blockWidth / 2, blockWidth, occupied);
+
+      if (ownedHusb) positions.get(ownedHusb)!.x = left;
+      if (ownedWife) positions.get(ownedWife)!.x = ownedHusb ? left + wOf(ownedHusb) + COL_GAP : left;
     }
   }
 
