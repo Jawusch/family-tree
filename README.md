@@ -62,7 +62,9 @@ npm run build
 - Darstellungs-Einstellungen (Farben, Schriftgröße, Kachelform) via
   `localStorage`, Textvermessung über Canvas (`src/tree/`)
 - PDF-Export als Vektorgrafik mit jsPDF + svg2pdf.js, erst beim ersten Klick
-  nachgeladen (`src/export/pdf.ts`)
+  nachgeladen (`src/export/pdf.ts`). Enthält der Baum Zeichen, die die in PDF
+  eingebauten Schriften nicht kennen (z.B. das "č" in "Pestiček"), wird
+  zusätzlich Roboto in die Datei eingebettet (`src/assets/fonts/`, Apache 2.0)
 
 ## Deployment
 

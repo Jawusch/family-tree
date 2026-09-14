@@ -16,15 +16,17 @@ const MARGIN = 40;
 /**
  * Builds a standalone SVG of the whole tree, cropped to its content and
  * styled entirely through presentation attributes - no stylesheet, no
- * classes, and Helvetica instead of the UI font stack, so a PDF converter
- * reproduces it exactly without needing the page's CSS. Selection state is
- * deliberately left out: an export shows the tree, not the editing state.
+ * classes, and a font the PDF side knows about instead of the UI font
+ * stack, so a PDF converter reproduces it exactly without needing the
+ * page's CSS. Selection state is deliberately left out: an export shows
+ * the tree, not the editing state.
  */
 export function buildExportSvg(
   data: GedcomData,
   layout: GridLayout,
   visuals: TileVisuals,
   settings: TreeSettings,
+  fontFamily: string,
 ): { svg: SVGSVGElement; width: number; height: number } {
   const tiles = buildRenderTiles(data, layout, visuals, settings);
 
@@ -111,7 +113,7 @@ export function buildExportSvg(
       text.setAttribute('x', String(visual.width / 2));
       text.setAttribute('y', String(line.y));
       text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('font-family', 'helvetica');
+      text.setAttribute('font-family', fontFamily);
       text.setAttribute('font-size', String(line.fontSize));
       text.setAttribute('font-weight', line.bold ? 'bold' : 'normal');
       text.setAttribute('fill', line.muted ? muted : textColor);

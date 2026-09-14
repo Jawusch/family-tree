@@ -3,6 +3,7 @@ import type { GridLayout } from '../gedcom/gridLayout';
 import type { TreeSettings } from '../tree/settings';
 import type { TileVisuals } from '../tree/tileVisuals';
 import { buildExportSvg } from '../tree/exportSvg';
+import { EMBEDDED_FONT, embedUnicodeFont, needsEmbeddedFont } from './pdfFont';
 
 /** jsPDF refuses page dimensions beyond this (the PDF format's own limit). */
 const MAX_PAGE_UNITS = 14000;
@@ -21,7 +22,17 @@ export async function exportTreeAsPdf(
 ): Promise<void> {
   const [{ jsPDF }] = await Promise.all([import('jspdf'), import('svg2pdf.js')]);
 
-  const { svg, width, height } = buildExportSvg(data, layout, visuals, settings);
+  // The built-in PDF fonts only cover Western European text. Anything
+  // beyond that needs a real font put into the file - fetched only then.
+  const allText = [...visuals.byId.values()].flatMap((v) => v.lines.map((l) => l.text));
+  const unicode = needsEmbeddedFont(allText);
+  const { svg, width, height } = buildExportSvg(
+    data,
+    layout,
+    visuals,
+    settings,
+    unicode ? EMBEDDED_FONT : 'helvetica',
+  );
 
   // Very wide trees can exceed what a PDF page may be; scale the drawing
   // down to fit rather than cropping it.
@@ -35,6 +46,8 @@ export async function exportTreeAsPdf(
     format: [pageWidth, pageHeight],
     compress: true,
   });
+
+  if (unicode) await embedUnicodeFont(doc);
 
   // svg2pdf reads the element's geometry, so it has to be in the document -
   // hidden away off-screen, then removed again.
