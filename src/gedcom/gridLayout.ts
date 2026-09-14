@@ -118,6 +118,9 @@ function fitBlock(idealLeft: number, width: number, occupied: Extent[], gap = CO
   return best ?? idealLeft;
 }
 
+/** Space kept between the drawing and the edge of the canvas. */
+const CANVAS_MARGIN = 50;
+
 /** How far apart two families' child lines have to be before they may share
  * a height without reading as one continuous line. */
 const BUS_CLEARANCE = COL_GAP;
@@ -694,14 +697,26 @@ function layoutOnce(
         spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
         dropY = y;
 
-        // Hang the children from the point on the marriage line that sits
-        // over them - for a couple side by side that's the gap between the
-        // two of them (their children are centred underneath anyway).
+        // For a couple standing side by side, the line to their children
+        // leaves from the middle of the gap between their two tiles - the
+        // one stretch of their marriage line that is actually visible, and
+        // where it reads as belonging to both of them equally. Taking the
+        // midpoint between the two tile centres instead lands slightly off
+        // whenever the two tiles are not the same width.
+        const leftEdge = leftPos.x + leftPos.w;
+        const sideBySide = rightPos.x - leftEdge <= COL_GAP + 0.5;
+
+        // Where the couple is not side by side - a remarriage, with other
+        // tiles or empty space between them - the line leaves from the
+        // point above the children instead, so it does not first run back
+        // across somebody else's family before heading down.
         const childCenters = childPositions.map((c) => c.x + c.w / 2);
         const overChildren = childCenters.length
           ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
           : (leftCx + rightCx) / 2;
-        let drop = Math.min(Math.max(overChildren, leftCx), rightCx);
+        let drop = sideBySide
+          ? (leftEdge + rightPos.x) / 2
+          : Math.min(Math.max(overChildren, leftCx), rightCx);
 
         // A line going down has to branch off a *visible* piece of the
         // marriage line, never straight out of someone's tile - the
@@ -1151,10 +1166,21 @@ function layoutOnce(
     if (!improved) break;
   }
 
+  // The moves above can push a group past the left edge of the canvas,
+  // where its tiles would simply be cut off. Put the whole drawing back
+  // against a fixed margin, then size the canvas to what is really in it.
+  let leftmost = Infinity;
+  for (const tile of tiles.values()) leftmost = Math.min(leftmost, tile.x);
+  if (Number.isFinite(leftmost) && Math.abs(CANVAS_MARGIN - leftmost) > 0.5) {
+    const shift = CANVAS_MARGIN - leftmost;
+    for (const tile of tiles.values()) tile.x += shift;
+  }
+
   const connectors = buildConnectors().connectors;
+  maxX = 0;
   for (const tile of tiles.values()) maxX = Math.max(maxX, tile.x + tile.w);
 
-  const width = maxX + 100;
+  const width = maxX + CANVAS_MARGIN;
   const height = (maxGen + 1) * rowStep + 100;
 
   return { layout: { tiles, connectors, width, height }, crossings: arrangement.crossings };
