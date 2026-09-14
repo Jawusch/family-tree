@@ -1,4 +1,4 @@
-import type { GedcomData } from './types';
+import type { Family, GedcomData } from './types';
 import { computeGenerations } from './relations';
 
 export const TILE_WIDTH = 180;
@@ -162,11 +162,15 @@ function roundedPath(points: { x: number; y: number }[], radius = CORNER_RADIUS)
  * its children never drifts away from them afterwards the way a separate
  * "fix up overlaps per row" pass would.
  */
-export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEFAULT_METRICS): GridLayout {
+function layoutOnce(
+  data: GedcomData,
+  metrics: LayoutMetrics,
+  childOrder: Map<string, string[]> | undefined,
+): { layout: GridLayout; crossings: number } {
   const generations = computeGenerations(data);
 
   if (data.individualOrder.length === 0) {
-    return { tiles: new Map(), connectors: [], width: 800, height: 600 };
+    return { layout: { tiles: new Map(), connectors: [], width: 800, height: 600 }, crossings: 0 };
   }
 
   const tileH = metrics.height;
@@ -192,6 +196,16 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
     if (ya !== undefined) return -1;
     if (yb !== undefined) return 1;
     return 0;
+  };
+
+  /** A family's children, oldest first - unless a previous round worked
+   * out an order that leaves fewer lines crossing. */
+  const orderedChildren = (fam: Family): string[] => {
+    const kids = fam.children.filter((c) => data.individuals.has(c));
+    const preferred = childOrder?.get(fam.id);
+    if (!preferred) return kids.sort(byYear);
+    const rank = new Map(preferred.map((id, i) => [id, i]));
+    return kids.sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
   };
 
   function shiftBounds(b: Bounds, dx: number): void {
@@ -290,7 +304,7 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
   function layoutExtraMarriageBounds(famId: string, anchorId: string, avoidContour: Contour): Bounds {
     const fam = data.families.get(famId)!;
     const newSpouse = fam.husb === anchorId ? fam.wife : fam.husb;
-    const allKids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
+    const allKids = orderedChildren(fam);
     const freshKids = allKids.filter((c) => !positions.has(c));
 
     let childrenBoundsList: Bounds[] = [];
@@ -334,7 +348,7 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
     visitingFamily.add(famId);
 
     const fam = data.families.get(famId)!;
-    const allKids = fam.children.filter((c) => data.individuals.has(c)).sort(byYear);
+    const allKids = orderedChildren(fam);
     // Only children who aren't already positioned pull this family's
     // centre. A child can already be positioned if they were reached via a
     // different branch first (e.g. their spouse's family, when two
@@ -563,237 +577,605 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
     maxGen = Math.max(maxGen, generation);
   }
 
-  // Marriage lines run horizontally through the row itself, at the tiles'
-  // own vertical middle - the parts that pass behind a tile are hidden
-  // (connectors are drawn underneath the tiles), so what's visible are the
-  // segments crossing the gaps between them. A line never leaves the row's
-  // band, so it can't be mistaken for a line going down to children.
-  //
-  // Once someone has married more than once they can only sit tile-adjacent
-  // to two of their partners, so the remaining lines have to reach past
-  // other people's tiles. Where two such lines in the same row would
-  // genuinely run into each other, the later ones get their own slightly
-  // lower height *within* the row band, so it stays clear which line
-  // belongs to which marriage. Lines that merely meet at a shared spouse
-  // aren't a conflict - they read as one line running through that person.
-  interface MarriageSpan {
-    famId: string;
-    row: number;
-    start: number;
-    end: number;
-  }
-  const spans: MarriageSpan[] = [];
-  for (const fam of data.families.values()) {
-    const h = fam.husb ? tiles.get(fam.husb) : undefined;
-    const w = fam.wife ? tiles.get(fam.wife) : undefined;
-    if (!h || !w) continue;
-    const hc = h.x + h.w / 2;
-    const wc = w.x + w.w / 2;
-    spans.push({ famId: fam.id, row: h.generation, start: Math.min(hc, wc), end: Math.max(hc, wc) });
+  interface ConnectorResult {
+    connectors: FamilyConnector[];
+    /** How often a line going down crosses another family's line. */
+    crossings: number;
+    /** Total length of all connector lines; only used to break ties. */
+    length: number;
   }
 
-  const tilesInRow = new Map<number, TilePosition[]>();
-  for (const tile of tiles.values()) {
-    if (!tilesInRow.has(tile.generation)) tilesInRow.set(tile.generation, []);
-    tilesInRow.get(tile.generation)!.push(tile);
-  }
-
-  const laneOf = new Map<string, number>();
-  const laneStepInRow = new Map<number, number>();
-  const spansByRow = new Map<number, MarriageSpan[]>();
-  for (const span of spans) {
-    if (!spansByRow.has(span.row)) spansByRow.set(span.row, []);
-    spansByRow.get(span.row)!.push(span);
-  }
-  for (const [row, rowSpans] of spansByRow) {
-    // Shortest first, so a long line reaching past other tiles is the one
-    // that gives way, not the neighbouring couples sitting side by side.
-    rowSpans.sort((a, b) => a.start - b.start || a.end - a.start - (b.end - b.start));
-    const lanes: MarriageSpan[][] = [];
-    for (const span of rowSpans) {
-      let lane = 0;
-      // Overlapping only counts when the spans genuinely cross, not when
-      // they meet at a shared spouse - hence the small tolerance.
-      while (lanes[lane]?.some((other) => span.start < other.end - 1 && other.start < span.end - 1)) lane++;
-      (lanes[lane] ??= []).push(span);
-      laneOf.set(span.famId, lane);
+  // Every connector follows from the tile positions alone, so the whole lot
+  // can be rebuilt to score an arrangement that the ordering pass below
+  // wants to try out.
+  // Scoring a trial arrangement needs the geometry but not the finished
+  // SVG paths, which are by far the most expensive part to produce - so
+  // those are only built for the arrangement that is actually kept.
+  function buildConnectors(withPaths = true): ConnectorResult {
+    // Marriage lines run horizontally through the row itself, at the tiles'
+    // own vertical middle - the parts that pass behind a tile are hidden
+    // (connectors are drawn underneath the tiles), so what's visible are the
+    // segments crossing the gaps between them. A line never leaves the row's
+    // band, so it can't be mistaken for a line going down to children.
+    //
+    // Once someone has married more than once they can only sit tile-adjacent
+    // to two of their partners, so the remaining lines have to reach past
+    // other people's tiles. Where two such lines in the same row would
+    // genuinely run into each other, the later ones get their own slightly
+    // lower height *within* the row band, so it stays clear which line
+    // belongs to which marriage. Lines that merely meet at a shared spouse
+    // aren't a conflict - they read as one line running through that person.
+    interface MarriageSpan {
+      famId: string;
+      row: number;
+      start: number;
+      end: number;
     }
-    // Fit all of this row's lanes into the lower half of the tile band, so
-    // even the deepest one still ends comfortably inside the tiles.
-    const maxLane = lanes.length - 1;
-    laneStepInRow.set(row, maxLane > 0 ? Math.min(10, Math.max(2, tileH / 2 - 8) / maxLane) : 0);
-  }
+    const spans: MarriageSpan[] = [];
+    for (const fam of data.families.values()) {
+      const h = fam.husb ? tiles.get(fam.husb) : undefined;
+      const w = fam.wife ? tiles.get(fam.wife) : undefined;
+      if (!h || !w) continue;
+      const hc = h.x + h.w / 2;
+      const wc = w.x + w.w / 2;
+      spans.push({ famId: fam.id, row: h.generation, start: Math.min(hc, wc), end: Math.max(hc, wc) });
+    }
 
-  // --- Orthogonal family connectors (spouse line + parent/child bus). ---
-  // Worked out in two steps: first what each family needs, then - once
-  // every family in a row is known - at which height each one's line to its
-  // children runs, so that two families' lines never merge into one.
-  interface ConnectorPlan {
-    famId: string;
-    spouseLine?: FamilyConnector['spouseLine'];
-    dropX?: number;
-    dropY?: number;
-    children: TilePosition[];
-    parentY: number;
-    parentRow: number;
-    busStart: number;
-    busEnd: number;
-  }
+    const tilesInRow = new Map<number, TilePosition[]>();
+    for (const tile of tiles.values()) {
+      if (!tilesInRow.has(tile.generation)) tilesInRow.set(tile.generation, []);
+      tilesInRow.get(tile.generation)!.push(tile);
+    }
 
-  const plans: ConnectorPlan[] = [];
-  for (const fam of data.families.values()) {
-    const husbPos = fam.husb ? tiles.get(fam.husb) : undefined;
-    const wifePos = fam.wife ? tiles.get(fam.wife) : undefined;
-    const childPositions = fam.children.map((c) => tiles.get(c)).filter((p): p is TilePosition => !!p);
+    const laneOf = new Map<string, number>();
+    const laneStepInRow = new Map<number, number>();
+    const spansByRow = new Map<number, MarriageSpan[]>();
+    for (const span of spans) {
+      if (!spansByRow.has(span.row)) spansByRow.set(span.row, []);
+      spansByRow.get(span.row)!.push(span);
+    }
+    for (const [row, rowSpans] of spansByRow) {
+      // Shortest first, so a long line reaching past other tiles is the one
+      // that gives way, not the neighbouring couples sitting side by side.
+      rowSpans.sort((a, b) => a.start - b.start || a.end - a.start - (b.end - b.start));
+      const lanes: MarriageSpan[][] = [];
+      for (const span of rowSpans) {
+        let lane = 0;
+        // Overlapping only counts when the spans genuinely cross, not when
+        // they meet at a shared spouse - hence the small tolerance.
+        while (lanes[lane]?.some((other) => span.start < other.end - 1 && other.start < span.end - 1)) lane++;
+        (lanes[lane] ??= []).push(span);
+        laneOf.set(span.famId, lane);
+      }
+      // Fit all of this row's lanes into the lower half of the tile band, so
+      // even the deepest one still ends comfortably inside the tiles.
+      const maxLane = lanes.length - 1;
+      laneStepInRow.set(row, maxLane > 0 ? Math.min(10, Math.max(2, tileH / 2 - 8) / maxLane) : 0);
+    }
 
-    let spouseLine: FamilyConnector['spouseLine'];
-    // Where the children's line leaves the marriage line.
-    let dropX: number | undefined;
-    let dropY: number | undefined;
+    // --- Orthogonal family connectors (spouse line + parent/child bus). ---
+    // Worked out in two steps: first what each family needs, then - once
+    // every family in a row is known - at which height each one's line to its
+    // children runs, so that two families' lines never merge into one.
+    interface ConnectorPlan {
+      famId: string;
+      spouseLine?: FamilyConnector['spouseLine'];
+      dropX?: number;
+      dropY?: number;
+      children: TilePosition[];
+      parentY: number;
+      parentRow: number;
+      busStart: number;
+      busEnd: number;
+    }
 
-    if (husbPos && wifePos) {
-      const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
-      const leftCx = leftPos.x + leftPos.w / 2;
-      const rightCx = rightPos.x + rightPos.w / 2;
-      const lane = laneOf.get(fam.id) ?? 0;
-      const step = laneStepInRow.get(leftPos.generation) ?? 0;
-      // Straight through the row, tile centre to tile centre - the parts
-      // behind tiles are hidden, so it shows up in the gaps between them.
-      const y = leftPos.y + tileH / 2 + lane * step;
-      spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
-      dropY = y;
+    const plans: ConnectorPlan[] = [];
+    for (const fam of data.families.values()) {
+      const husbPos = fam.husb ? tiles.get(fam.husb) : undefined;
+      const wifePos = fam.wife ? tiles.get(fam.wife) : undefined;
+      const childPositions = fam.children.map((c) => tiles.get(c)).filter((p): p is TilePosition => !!p);
 
-      // Hang the children from the point on the marriage line that sits
-      // over them - for a couple side by side that's the gap between the
-      // two of them (their children are centred underneath anyway).
+      let spouseLine: FamilyConnector['spouseLine'];
+      // Where the children's line leaves the marriage line.
+      let dropX: number | undefined;
+      let dropY: number | undefined;
+
+      if (husbPos && wifePos) {
+        const [leftPos, rightPos] = husbPos.x <= wifePos.x ? [husbPos, wifePos] : [wifePos, husbPos];
+        const leftCx = leftPos.x + leftPos.w / 2;
+        const rightCx = rightPos.x + rightPos.w / 2;
+        const lane = laneOf.get(fam.id) ?? 0;
+        const step = laneStepInRow.get(leftPos.generation) ?? 0;
+        // Straight through the row, tile centre to tile centre - the parts
+        // behind tiles are hidden, so it shows up in the gaps between them.
+        const y = leftPos.y + tileH / 2 + lane * step;
+        spouseLine = { x1: leftCx, y1: y, x2: rightCx, y2: y };
+        dropY = y;
+
+        // Hang the children from the point on the marriage line that sits
+        // over them - for a couple side by side that's the gap between the
+        // two of them (their children are centred underneath anyway).
+        const childCenters = childPositions.map((c) => c.x + c.w / 2);
+        const overChildren = childCenters.length
+          ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
+          : (leftCx + rightCx) / 2;
+        let drop = Math.min(Math.max(overChildren, leftCx), rightCx);
+
+        // A line going down has to branch off a *visible* piece of the
+        // marriage line, never straight out of someone's tile - the
+        // downward line stands for "children of this couple", so it has to
+        // be seen leaving the connection between them. Where the point over
+        // the children falls behind a tile (a remarriage puts the children
+        // right under one partner), step into the gap beside that tile,
+        // towards the rest of the line.
+        const blocking = (tilesInRow.get(leftPos.generation) ?? []).find(
+          (t) => drop > t.x - 0.5 && drop < t.x + t.w + 0.5,
+        );
+        if (blocking) {
+          const inGapLeft = blocking.x - COL_GAP / 2;
+          const inGapRight = blocking.x + blocking.w + COL_GAP / 2;
+          const fits = (x: number) => x >= leftCx - 0.5 && x <= rightCx + 0.5;
+          // Prefer the gap on the side the rest of the line runs off to.
+          const preferLeft = drop - leftCx > rightCx - drop;
+          const first = preferLeft ? inGapLeft : inGapRight;
+          const second = preferLeft ? inGapRight : inGapLeft;
+          if (fits(first)) drop = first;
+          else if (fits(second)) drop = second;
+        }
+        dropX = drop;
+      } else if (husbPos || wifePos) {
+        // A lone parent has no marriage line to branch off, so the line
+        // starts at the bottom edge of their tile.
+        const p = (husbPos ?? wifePos)!;
+        dropX = p.x + p.w / 2;
+        dropY = p.y + tileH;
+      }
+
+      const parent = husbPos ?? wifePos;
       const childCenters = childPositions.map((c) => c.x + c.w / 2);
-      const overChildren = childCenters.length
-        ? (Math.min(...childCenters) + Math.max(...childCenters)) / 2
-        : (leftCx + rightCx) / 2;
-      let drop = Math.min(Math.max(overChildren, leftCx), rightCx);
+      const busPoints = dropX !== undefined ? [dropX, ...childCenters] : childCenters;
 
-      // A line going down has to branch off a *visible* piece of the
-      // marriage line, never straight out of someone's tile - the
-      // downward line stands for "children of this couple", so it has to
-      // be seen leaving the connection between them. Where the point over
-      // the children falls behind a tile (a remarriage puts the children
-      // right under one partner), step into the gap beside that tile,
-      // towards the rest of the line.
-      const blocking = (tilesInRow.get(leftPos.generation) ?? []).find(
-        (t) => drop > t.x - 0.5 && drop < t.x + t.w + 0.5,
-      );
-      if (blocking) {
-        const inGapLeft = blocking.x - COL_GAP / 2;
-        const inGapRight = blocking.x + blocking.w + COL_GAP / 2;
-        const fits = (x: number) => x >= leftCx - 0.5 && x <= rightCx + 0.5;
-        // Prefer the gap on the side the rest of the line runs off to.
-        const preferLeft = drop - leftCx > rightCx - drop;
-        const first = preferLeft ? inGapLeft : inGapRight;
-        const second = preferLeft ? inGapRight : inGapLeft;
-        if (fits(first)) drop = first;
-        else if (fits(second)) drop = second;
-      }
-      dropX = drop;
-    } else if (husbPos || wifePos) {
-      // A lone parent has no marriage line to branch off, so the line
-      // starts at the bottom edge of their tile.
-      const p = (husbPos ?? wifePos)!;
-      dropX = p.x + p.w / 2;
-      dropY = p.y + tileH;
-    }
-
-    const parent = husbPos ?? wifePos;
-    const childCenters = childPositions.map((c) => c.x + c.w / 2);
-    const busPoints = dropX !== undefined ? [dropX, ...childCenters] : childCenters;
-
-    plans.push({
-      famId: fam.id,
-      spouseLine,
-      dropX,
-      dropY,
-      children: childPositions,
-      parentY: parent?.y ?? 0,
-      parentRow: parent?.generation ?? 0,
-      busStart: busPoints.length ? Math.min(...busPoints) : 0,
-      busEnd: busPoints.length ? Math.max(...busPoints) : 0,
-    });
-  }
-
-  // Each family's children hang off a horizontal line in the gap below
-  // their parents. Drawing every family in a row at the same height makes
-  // neighbouring families' lines run into each other wherever their
-  // children sit interleaved - which happens as soon as two children of
-  // different families marry and are placed side by side - and the result
-  // reads as one line, as if all of those children belonged to one couple.
-  // So the lines of a row are spread across the gap: two that would touch
-  // get their own height, and only lines that are clearly apart share one.
-  const busYOf = new Map<string, number>();
-  const plansByRow = new Map<number, ConnectorPlan[]>();
-  for (const plan of plans) {
-    if (plan.children.length === 0 || plan.dropX === undefined) continue;
-    if (!plansByRow.has(plan.parentRow)) plansByRow.set(plan.parentRow, []);
-    plansByRow.get(plan.parentRow)!.push(plan);
-  }
-
-  for (const rowPlans of plansByRow.values()) {
-    // A family whose line has no horizontal part at all (a single child
-    // straight below the drop point) can't merge with anything, so it
-    // doesn't take up one of the heights.
-    const spanning = rowPlans.filter((p) => p.busEnd - p.busStart > 1);
-    // Narrow lines first: they settle nearest the parents, leaving the
-    // wide ones closest to the children, where their many downward
-    // branches are short and cross the least.
-    spanning.sort((a, b) => a.busEnd - a.busStart - (b.busEnd - b.busStart) || a.busStart - b.busStart);
-
-    const lanes: ConnectorPlan[][] = [];
-    const laneOfBus = new Map<string, number>();
-    for (const plan of spanning) {
-      let lane = 0;
-      while (
-        lanes[lane]?.some(
-          (other) =>
-            plan.busStart < other.busEnd + BUS_CLEARANCE && other.busStart < plan.busEnd + BUS_CLEARANCE,
-        )
-      ) {
-        lane++;
-      }
-      (lanes[lane] ??= []).push(plan);
-      laneOfBus.set(plan.famId, lane);
-    }
-
-    const step = ROW_GAP / (Math.max(1, lanes.length) + 1);
-    for (const plan of rowPlans) {
-      const lane = laneOfBus.get(plan.famId);
-      const offset = lane === undefined ? ROW_GAP / 2 : step * (lane + 1);
-      busYOf.set(plan.famId, plan.parentY + tileH + offset);
-    }
-  }
-
-  const connectors: FamilyConnector[] = [];
-  for (const plan of plans) {
-    const { dropX, dropY } = plan;
-    let path: string | undefined;
-    if (dropX !== undefined && dropY !== undefined && plan.children.length > 0) {
-      const busY = busYOf.get(plan.famId) ?? plan.parentY + tileH + ROW_GAP / 2;
-      const childPaths = plan.children.map((c) => {
-        const cx = c.x + c.w / 2;
-        return roundedPath([
-          { x: dropX, y: dropY },
-          { x: dropX, y: busY },
-          { x: cx, y: busY },
-          { x: cx, y: c.y },
-        ]);
+      plans.push({
+        famId: fam.id,
+        spouseLine,
+        dropX,
+        dropY,
+        children: childPositions,
+        parentY: parent?.y ?? 0,
+        parentRow: parent?.generation ?? 0,
+        busStart: busPoints.length ? Math.min(...busPoints) : 0,
+        busEnd: busPoints.length ? Math.max(...busPoints) : 0,
       });
-      path = childPaths.filter(Boolean).join(' ');
     }
 
-    if (plan.spouseLine || path) {
-      connectors.push({ familyId: plan.famId, spouseLine: plan.spouseLine, path });
+    // Each family's children hang off a horizontal line in the gap below
+    // their parents. Drawing every family in a row at the same height makes
+    // neighbouring families' lines run into each other wherever their
+    // children sit interleaved - which happens as soon as two children of
+    // different families marry and are placed side by side - and the result
+    // reads as one line, as if all of those children belonged to one couple.
+    // So the lines of a row are spread across the gap: two that would touch
+    // get their own height, and only lines that are clearly apart share one.
+    const busYOf = new Map<string, number>();
+    const plansByRow = new Map<number, ConnectorPlan[]>();
+    for (const plan of plans) {
+      if (plan.children.length === 0 || plan.dropX === undefined) continue;
+      if (!plansByRow.has(plan.parentRow)) plansByRow.set(plan.parentRow, []);
+      plansByRow.get(plan.parentRow)!.push(plan);
+    }
+
+    for (const rowPlans of plansByRow.values()) {
+      // A family whose line has no horizontal part at all (a single child
+      // straight below the drop point) can't merge with anything, so it
+      // doesn't take up one of the heights.
+      const spanning = rowPlans.filter((p) => p.busEnd - p.busStart > 1);
+      // Narrow lines first: they settle nearest the parents, leaving the
+      // wide ones closest to the children, where their many downward
+      // branches are short and cross the least.
+      spanning.sort((a, b) => a.busEnd - a.busStart - (b.busEnd - b.busStart) || a.busStart - b.busStart);
+
+      const lanes: ConnectorPlan[][] = [];
+      const laneOfBus = new Map<string, number>();
+      for (const plan of spanning) {
+        let lane = 0;
+        while (
+          lanes[lane]?.some(
+            (other) =>
+              plan.busStart < other.busEnd + BUS_CLEARANCE && other.busStart < plan.busEnd + BUS_CLEARANCE,
+          )
+        ) {
+          lane++;
+        }
+        (lanes[lane] ??= []).push(plan);
+        laneOfBus.set(plan.famId, lane);
+      }
+
+      const step = ROW_GAP / (Math.max(1, lanes.length) + 1);
+      for (const plan of rowPlans) {
+        const lane = laneOfBus.get(plan.famId);
+        const offset = lane === undefined ? ROW_GAP / 2 : step * (lane + 1);
+        busYOf.set(plan.famId, plan.parentY + tileH + offset);
+      }
+    }
+
+    const connectors: FamilyConnector[] = [];
+    for (const plan of withPaths ? plans : []) {
+      const { dropX, dropY } = plan;
+      let path: string | undefined;
+      if (dropX !== undefined && dropY !== undefined && plan.children.length > 0) {
+        const busY = busYOf.get(plan.famId) ?? plan.parentY + tileH + ROW_GAP / 2;
+        const childPaths = plan.children.map((c) => {
+          const cx = c.x + c.w / 2;
+          return roundedPath([
+            { x: dropX, y: dropY },
+            { x: dropX, y: busY },
+            { x: cx, y: busY },
+            { x: cx, y: c.y },
+          ]);
+        });
+        path = childPaths.filter(Boolean).join(' ');
+      }
+
+      if (plan.spouseLine || path) {
+        connectors.push({ familyId: plan.famId, spouseLine: plan.spouseLine, path });
+      }
+    }
+
+    // Score this arrangement: how often two families' lines get in each
+    // other's way in the gap between two rows. The parts inside the tile
+    // band are hidden behind the tiles, so only the gap counts.
+    const verticals: { famId: string; x: number; top: number; bottom: number }[] = [];
+    const horizontals: { famId: string; y: number; left: number; right: number }[] = [];
+    let length = 0;
+    for (const plan of plans) {
+      if (plan.dropX === undefined || plan.children.length === 0) continue;
+      const busY = busYOf.get(plan.famId) ?? plan.parentY + tileH + ROW_GAP / 2;
+      const tileBottom = plan.parentY + tileH;
+      length += Math.abs(busY - tileBottom) + (plan.busEnd - plan.busStart);
+
+      // A child sitting straight below the drop point is reached by one
+      // unbroken line from the parents, not by two segments meeting halfway
+      // - which matters for working out what that line runs into.
+      let dropDrawnStraightDown = false;
+      for (const child of plan.children) {
+        const cx = child.x + child.w / 2;
+        const straightDown = Math.abs(cx - plan.dropX) < 0.5;
+        if (straightDown) dropDrawnStraightDown = true;
+        verticals.push({ famId: plan.famId, x: cx, top: straightDown ? tileBottom : busY, bottom: child.y });
+        length += Math.abs(child.y - busY);
+      }
+      if (!dropDrawnStraightDown) {
+        verticals.push({ famId: plan.famId, x: plan.dropX, top: tileBottom, bottom: busY });
+      }
+      horizontals.push({ famId: plan.famId, y: busY, left: plan.busStart, right: plan.busEnd });
+    }
+
+    // Touching counts the same as crossing: a line ending exactly on
+    // another family's line reads as a junction between the two, which
+    // claims a relationship that isn't there.
+    let crossings = 0;
+    for (const v of verticals) {
+      for (const h of horizontals) {
+        if (v.famId === h.famId) continue;
+        if (v.x >= h.left - 0.5 && v.x <= h.right + 0.5 && h.y >= v.top - 0.5 && h.y <= v.bottom + 0.5) {
+          crossings++;
+        }
+      }
+    }
+    // Two downward lines sharing a column merge into one just as badly.
+    const byColumn = new Map<number, typeof verticals>();
+    for (const v of verticals) {
+      const column = Math.round(v.x);
+      if (!byColumn.has(column)) byColumn.set(column, []);
+      byColumn.get(column)!.push(v);
+    }
+    for (const column of byColumn.values()) {
+      for (let i = 0; i < column.length; i++) {
+        for (let j = i + 1; j < column.length; j++) {
+          if (column[i].famId === column[j].famId) continue;
+          const overlap =
+            Math.min(column[i].bottom, column[j].bottom) - Math.max(column[i].top, column[j].top);
+          if (overlap >= -0.5) crossings++;
+        }
+      }
+    }
+
+    return { connectors, crossings, length };
+  }
+
+  // --- Reduce crossings by reordering marriage groups within a row. ---
+  // Two couples sitting in the opposite order to their children force their
+  // lines to cross. Once everyone is placed, neither couple's exact spot is
+  // load-bearing any more, so neighbouring groups swap places whenever that
+  // removes a crossing (or, at no extra crossings, shortens the lines).
+  // Whole marriage groups move at once, so spouses stay side by side, and a
+  // swap fills exactly the span the two groups occupied, so nothing can
+  // collide or drift into another row's business.
+  const marriedPairs = new Set<string>();
+  for (const fam of data.families.values()) {
+    if (fam.husb && fam.wife) {
+      marriedPairs.add(`${fam.husb}|${fam.wife}`);
+      marriedPairs.add(`${fam.wife}|${fam.husb}`);
     }
   }
+
+  const rowBlocks = (row: number): TilePosition[][] => {
+    const inRow = [...tiles.values()].filter((t) => t.generation === row).sort((a, b) => a.x - b.x);
+    const blocks: TilePosition[][] = [];
+    for (const tile of inRow) {
+      const current = blocks[blocks.length - 1];
+      const prev = current?.[current.length - 1];
+      const joinsPrevious =
+        prev !== undefined &&
+        tile.x - (prev.x + prev.w) <= COL_GAP + 0.5 &&
+        marriedPairs.has(`${prev.id}|${tile.id}`);
+      if (joinsPrevious) current!.push(tile);
+      else blocks.push([tile]);
+    }
+    return blocks;
+  };
+
+  const spousesOf = (id: string): string[] => {
+    const out: string[] = [];
+    for (const famId of data.individuals.get(id)?.fams ?? []) {
+      const fam = data.families.get(famId);
+      for (const spouse of [fam?.husb, fam?.wife]) if (spouse && spouse !== id) out.push(spouse);
+    }
+    return out;
+  };
+
+  const blockWidth = (block: TilePosition[]): number =>
+    block[block.length - 1].x + block[block.length - 1].w - block[0].x;
+
+  const swapBlocks = (left: TilePosition[], right: TilePosition[]): void => {
+    const leftStart = left[0].x;
+    const leftEnd = left[left.length - 1].x + left[left.length - 1].w;
+    const rightStart = right[0].x;
+    const rightEnd = right[right.length - 1].x + right[right.length - 1].w;
+    const between = rightStart - leftEnd;
+    for (const tile of right) tile.x += leftStart - rightStart;
+    for (const tile of left) tile.x += rightEnd - rightStart + between;
+  };
+
+  /** Turns a marriage group back to front - which side of the couple each
+   * partner stands on. The children hang off the line between the two
+   * either way, but which partner faces the neighbouring group decides
+   * whether the lines to both families' children have to cross. */
+  const reverseBlock = (block: TilePosition[]): void => {
+    if (block.length < 2) return;
+    const gaps: number[] = [];
+    for (let i = 1; i < block.length; i++) gaps.push(block[i].x - (block[i - 1].x + block[i - 1].w));
+    const reordered = [...block].reverse();
+    const reversedGaps = gaps.reverse();
+    let x = block[0].x;
+    for (let i = 0; i < reordered.length; i++) {
+      reordered[i].x = x;
+      x += reordered[i].w + (reversedGaps[i] ?? 0);
+    }
+  };
+
+  /** A marriage group together with everything hanging off it further down:
+   * their children, those children's partners, and so on. Swapping two
+   * groups only helps if their descendants come along - otherwise the lines
+   * from the group to its own children simply cross somewhere else. */
+  const descendantsCache = new Map<string, Set<string>>();
+  const descendantsOf = (block: TilePosition[]): Set<string> => {
+    // Who hangs off a group never changes, only where they sit - worth
+    // remembering across the many arrangements tried below.
+    const key = block.map((t) => t.id).join('|');
+    const cached = descendantsCache.get(key);
+    if (cached) return cached;
+
+    const found = new Set(block.map((t) => t.id));
+    const queue = [...found];
+    for (let head = 0; head < queue.length; head++) {
+      const person = data.individuals.get(queue[head]);
+      for (const famId of person?.fams ?? []) {
+        const fam = data.families.get(famId);
+        for (const child of fam?.children ?? []) {
+          for (const id of [child, ...spousesOf(child)]) {
+            if (!tiles.has(id) || found.has(id)) continue;
+            found.add(id);
+            queue.push(id);
+          }
+        }
+      }
+    }
+    descendantsCache.set(key, found);
+    return found;
+  };
+
+  /** Slides two groups (and their descendants) past each other as rigid
+   * bodies: the left one ends where the right one ended, and vice versa. */
+  const swapWithDescendants = (left: TilePosition[], right: TilePosition[]): void => {
+    const leftSet = descendantsOf(left);
+    const rightSet = descendantsOf(right);
+    // A shared descendant means the two lines are tangled together anyway;
+    // moving them apart is not meaningful.
+    for (const id of leftSet) if (rightSet.has(id)) return;
+
+    const leftEnd = left[left.length - 1].x + left[left.length - 1].w;
+    const rightEnd = right[right.length - 1].x + right[right.length - 1].w;
+    const towardsRight = rightEnd - leftEnd;
+    const towardsLeft = left[0].x - right[0].x;
+    for (const id of leftSet) tiles.get(id)!.x += towardsRight;
+    for (const id of rightSet) tiles.get(id)!.x += towardsLeft;
+  };
+
+  /** Whether any row has tiles sitting on top of each other, or closer
+   * together than the usual column gap. */
+  const hasCollisions = (): boolean => {
+    const byRow = new Map<number, TilePosition[]>();
+    for (const tile of tiles.values()) {
+      if (!byRow.has(tile.generation)) byRow.set(tile.generation, []);
+      byRow.get(tile.generation)!.push(tile);
+    }
+    for (const row of byRow.values()) {
+      const sorted = [...row].sort((a, b) => a.x - b.x);
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].x - (sorted[i - 1].x + sorted[i - 1].w) < COL_GAP - 0.5) return true;
+      }
+    }
+    return false;
+  };
+
+  let arrangement = buildConnectors(false);
+  const rowsPresent = [...new Set([...tiles.values()].map((t) => t.generation))].sort((a, b) => a - b);
+
+  /** Keeps the change if it is an improvement, otherwise puts everything
+   * back the way it was. */
+  const tryMove = (move: () => void): boolean => {
+    const before = [...tiles.values()].map((tile) => ({ tile, x: tile.x }));
+    const undo = () => {
+      for (const entry of before) entry.tile.x = entry.x;
+    };
+    move();
+    if (hasCollisions()) {
+      undo();
+      return false;
+    }
+    const candidate = buildConnectors(false);
+    const better =
+      candidate.crossings < arrangement.crossings ||
+      (candidate.crossings === arrangement.crossings && candidate.length < arrangement.length - 0.5);
+    if (better) {
+      arrangement = candidate;
+      return true;
+    }
+    undo();
+    return false;
+  };
+
+  for (let pass = 0; pass < 4; pass++) {
+    let improved = false;
+    for (const row of rowsPresent) {
+      let blocks = rowBlocks(row);
+      for (let i = 0; i < blocks.length; i++) {
+        if (tryMove(() => reverseBlock(blocks[i]))) {
+          improved = true;
+          blocks = rowBlocks(row);
+        }
+      }
+      for (let i = 0; i + 1 < blocks.length; i++) {
+        for (let j = i + 1; j < blocks.length; j++) {
+          const left = blocks[i];
+          const right = blocks[j];
+          // Neighbours can always trade places on their own - between them
+          // they cover one stretch of the row, and after the swap they still
+          // do. Groups further apart would shove whatever sits between them
+          // aside unless the two are the same width, which most are.
+          const sameWidth = Math.abs(blockWidth(left) - blockWidth(right)) <= 0.5;
+          const moved =
+            ((j === i + 1 || sameWidth) && tryMove(() => swapBlocks(left, right))) ||
+            tryMove(() => swapWithDescendants(left, right));
+          if (moved) {
+            improved = true;
+            blocks = rowBlocks(row);
+            break;
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+
+  const connectors = buildConnectors().connectors;
+  for (const tile of tiles.values()) maxX = Math.max(maxX, tile.x + tile.w);
 
   const width = maxX + 100;
   const height = (maxGen + 1) * rowStep + 100;
 
-  return { tiles, connectors, width, height };
+  return { layout: { tiles, connectors, width, height }, crossings: arrangement.crossings };
+}
+
+/**
+ * Works out, from a finished drawing, which order each family's children
+ * would better be placed in. A child who married into another family is
+ * pulled towards where that family sits, so they end up at the end of their
+ * own group of brothers and sisters that faces their partner - which is
+ * what keeps the two families' lines to their children from crossing.
+ * Children without that pull keep their own position, so the usual order by
+ * age survives wherever it makes no difference.
+ */
+function deriveChildOrder(data: GedcomData, layout: GridLayout): Map<string, string[]> {
+  const centreOf = (id: string): number | undefined => {
+    const tile = layout.tiles.get(id);
+    return tile ? tile.x + tile.w / 2 : undefined;
+  };
+
+  /** Where someone's own group of brothers and sisters sits as a whole. */
+  const groupCentre = (id: string): number | undefined => {
+    const famId = data.individuals.get(id)?.famc.find((f) => data.families.has(f));
+    const group = famId ? data.families.get(famId)!.children : [];
+    const centres = (group.length > 0 ? group : [id])
+      .map(centreOf)
+      .filter((x): x is number => x !== undefined);
+    if (centres.length === 0) return centreOf(id);
+    return centres.reduce((a, b) => a + b, 0) / centres.length;
+  };
+
+  const order = new Map<string, string[]>();
+  for (const fam of data.families.values()) {
+    const kids = fam.children.filter((c) => layout.tiles.has(c));
+    if (kids.length < 2) continue;
+
+    const pullOf = new Map<string, number>();
+    for (const child of kids) {
+      const pulls: number[] = [];
+      const own = centreOf(child);
+      if (own !== undefined) pulls.push(own);
+      for (const famId of data.individuals.get(child)?.fams ?? []) {
+        const marriage = data.families.get(famId);
+        for (const spouse of [marriage?.husb, marriage?.wife]) {
+          if (!spouse || spouse === child) continue;
+          const pull = groupCentre(spouse);
+          if (pull !== undefined) pulls.push(pull);
+        }
+      }
+      pullOf.set(child, pulls.reduce((a, b) => a + b, 0) / Math.max(1, pulls.length));
+    }
+
+    order.set(
+      fam.id,
+      [...kids].sort((a, b) => pullOf.get(a)! - pullOf.get(b)!),
+    );
+  }
+  return order;
+}
+
+function sameOrder(a: Map<string, string[]> | undefined, b: Map<string, string[]>): boolean {
+  if (!a || a.size !== b.size) return false;
+  for (const [famId, kids] of a) {
+    const other = b.get(famId);
+    if (!other || other.length !== kids.length || kids.some((id, i) => id !== other[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Lays the tree out, then tries again with the order of each family's
+ * children reworked from what the first attempt revealed about where
+ * everyone ended up - the way layered graph drawing settles an ordering,
+ * repeated until it stops changing. The attempt with the fewest crossing
+ * lines wins, so a reordering is only kept when it actually pays off.
+ */
+export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEFAULT_METRICS): GridLayout {
+  let current = layoutOnce(data, metrics, undefined);
+  let best = current;
+  let order: Map<string, string[]> | undefined;
+
+  for (let round = 0; round < 3 && best.crossings > 0; round++) {
+    const next = deriveChildOrder(data, current.layout);
+    if (sameOrder(order, next)) break;
+    order = next;
+    current = layoutOnce(data, metrics, order);
+    if (
+      current.crossings < best.crossings ||
+      (current.crossings === best.crossings && current.layout.width < best.layout.width)
+    ) {
+      best = current;
+    }
+  }
+
+  return best.layout;
 }
