@@ -118,6 +118,10 @@ function fitBlock(idealLeft: number, width: number, occupied: Extent[], gap = CO
   return best ?? idealLeft;
 }
 
+/** How far apart two families' child lines have to be before they may share
+ * a height without reading as one continuous line. */
+const BUS_CLEARANCE = COL_GAP;
+
 const CORNER_RADIUS = 8;
 
 /** Builds an SVG path through `points` (each consecutive pair horizontal or
@@ -621,7 +625,22 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
   }
 
   // --- Orthogonal family connectors (spouse line + parent/child bus). ---
-  const connectors: FamilyConnector[] = [];
+  // Worked out in two steps: first what each family needs, then - once
+  // every family in a row is known - at which height each one's line to its
+  // children runs, so that two families' lines never merge into one.
+  interface ConnectorPlan {
+    famId: string;
+    spouseLine?: FamilyConnector['spouseLine'];
+    dropX?: number;
+    dropY?: number;
+    children: TilePosition[];
+    parentY: number;
+    parentRow: number;
+    busStart: number;
+    busEnd: number;
+  }
+
+  const plans: ConnectorPlan[] = [];
   for (const fam of data.families.values()) {
     const husbPos = fam.husb ? tiles.get(fam.husb) : undefined;
     const wifePos = fam.wife ? tiles.get(fam.wife) : undefined;
@@ -683,14 +702,84 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
       dropY = p.y + tileH;
     }
 
+    const parent = husbPos ?? wifePos;
+    const childCenters = childPositions.map((c) => c.x + c.w / 2);
+    const busPoints = dropX !== undefined ? [dropX, ...childCenters] : childCenters;
+
+    plans.push({
+      famId: fam.id,
+      spouseLine,
+      dropX,
+      dropY,
+      children: childPositions,
+      parentY: parent?.y ?? 0,
+      parentRow: parent?.generation ?? 0,
+      busStart: busPoints.length ? Math.min(...busPoints) : 0,
+      busEnd: busPoints.length ? Math.max(...busPoints) : 0,
+    });
+  }
+
+  // Each family's children hang off a horizontal line in the gap below
+  // their parents. Drawing every family in a row at the same height makes
+  // neighbouring families' lines run into each other wherever their
+  // children sit interleaved - which happens as soon as two children of
+  // different families marry and are placed side by side - and the result
+  // reads as one line, as if all of those children belonged to one couple.
+  // So the lines of a row are spread across the gap: two that would touch
+  // get their own height, and only lines that are clearly apart share one.
+  const busYOf = new Map<string, number>();
+  const plansByRow = new Map<number, ConnectorPlan[]>();
+  for (const plan of plans) {
+    if (plan.children.length === 0 || plan.dropX === undefined) continue;
+    if (!plansByRow.has(plan.parentRow)) plansByRow.set(plan.parentRow, []);
+    plansByRow.get(plan.parentRow)!.push(plan);
+  }
+
+  for (const rowPlans of plansByRow.values()) {
+    // A family whose line has no horizontal part at all (a single child
+    // straight below the drop point) can't merge with anything, so it
+    // doesn't take up one of the heights.
+    const spanning = rowPlans.filter((p) => p.busEnd - p.busStart > 1);
+    // Narrow lines first: they settle nearest the parents, leaving the
+    // wide ones closest to the children, where their many downward
+    // branches are short and cross the least.
+    spanning.sort((a, b) => a.busEnd - a.busStart - (b.busEnd - b.busStart) || a.busStart - b.busStart);
+
+    const lanes: ConnectorPlan[][] = [];
+    const laneOfBus = new Map<string, number>();
+    for (const plan of spanning) {
+      let lane = 0;
+      while (
+        lanes[lane]?.some(
+          (other) =>
+            plan.busStart < other.busEnd + BUS_CLEARANCE && other.busStart < plan.busEnd + BUS_CLEARANCE,
+        )
+      ) {
+        lane++;
+      }
+      (lanes[lane] ??= []).push(plan);
+      laneOfBus.set(plan.famId, lane);
+    }
+
+    const step = ROW_GAP / (Math.max(1, lanes.length) + 1);
+    for (const plan of rowPlans) {
+      const lane = laneOfBus.get(plan.famId);
+      const offset = lane === undefined ? ROW_GAP / 2 : step * (lane + 1);
+      busYOf.set(plan.famId, plan.parentY + tileH + offset);
+    }
+  }
+
+  const connectors: FamilyConnector[] = [];
+  for (const plan of plans) {
+    const { dropX, dropY } = plan;
     let path: string | undefined;
-    if (dropX !== undefined && dropY !== undefined && childPositions.length > 0) {
-      const busY = (husbPos ?? wifePos)!.y + tileH + ROW_GAP / 2;
-      const childPaths = childPositions.map((c) => {
+    if (dropX !== undefined && dropY !== undefined && plan.children.length > 0) {
+      const busY = busYOf.get(plan.famId) ?? plan.parentY + tileH + ROW_GAP / 2;
+      const childPaths = plan.children.map((c) => {
         const cx = c.x + c.w / 2;
         return roundedPath([
-          { x: dropX!, y: dropY! },
-          { x: dropX!, y: busY },
+          { x: dropX, y: dropY },
+          { x: dropX, y: busY },
           { x: cx, y: busY },
           { x: cx, y: c.y },
         ]);
@@ -698,8 +787,8 @@ export function computeGridLayout(data: GedcomData, metrics: LayoutMetrics = DEF
       path = childPaths.filter(Boolean).join(' ');
     }
 
-    if (spouseLine || path) {
-      connectors.push({ familyId: fam.id, spouseLine, path });
+    if (plan.spouseLine || path) {
+      connectors.push({ familyId: plan.famId, spouseLine: plan.spouseLine, path });
     }
   }
 
