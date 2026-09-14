@@ -581,7 +581,9 @@ function layoutOnce(
     connectors: FamilyConnector[];
     /** How often a line going down crosses another family's line. */
     crossings: number;
-    /** Total length of all connector lines; only used to break ties. */
+    /** How far everyone sits from what they are attached to. Only used to
+     * break ties between arrangements with the same number of conflicts,
+     * where it pulls families together. */
     length: number;
   }
 
@@ -831,7 +833,7 @@ function layoutOnce(
       if (plan.dropX === undefined || plan.children.length === 0) continue;
       const busY = busYOf.get(plan.famId) ?? plan.parentY + tileH + ROW_GAP / 2;
       const tileBottom = plan.parentY + tileH;
-      length += Math.abs(busY - tileBottom) + (plan.busEnd - plan.busStart);
+      length += Math.abs(busY - tileBottom);
 
       // A child sitting straight below the drop point is reached by one
       // unbroken line from the parents, not by two segments meeting halfway
@@ -842,12 +844,15 @@ function layoutOnce(
         const straightDown = Math.abs(cx - plan.dropX) < 0.5;
         if (straightDown) dropDrawnStraightDown = true;
         verticals.push({ famId: plan.famId, x: cx, top: straightDown ? tileBottom : busY, bottom: child.y });
-        length += Math.abs(child.y - busY);
+        length += Math.abs(child.y - busY) + Math.abs(cx - plan.dropX);
       }
       if (!dropDrawnStraightDown) {
         verticals.push({ famId: plan.famId, x: plan.dropX, top: tileBottom, bottom: busY });
       }
       horizontals.push({ famId: plan.famId, y: busY, left: plan.busStart, right: plan.busEnd });
+    }
+    for (const plan of plans) {
+      if (plan.spouseLine) length += Math.abs(plan.spouseLine.x2 - plan.spouseLine.x1);
     }
 
     // Touching counts the same as crossing: a line ending exactly on
@@ -935,6 +940,65 @@ function layoutOnce(
     const between = rightStart - leftEnd;
     for (const tile of right) tile.x += leftStart - rightStart;
     for (const tile of left) tile.x += rightEnd - rightStart + between;
+  };
+
+  /** Where a group's own connections would like it to sit: over its
+   * children, and under its parents. */
+  const idealCentreOf = (block: TilePosition[]): number | undefined => {
+    const pulls: number[] = [];
+    const centreOfAll = (ids: (string | undefined)[]): number | undefined => {
+      const centres = ids
+        .map((id) => (id ? tiles.get(id) : undefined))
+        .filter((t): t is TilePosition => !!t)
+        .map((t) => t.x + t.w / 2);
+      if (centres.length === 0) return undefined;
+      return (Math.min(...centres) + Math.max(...centres)) / 2;
+    };
+
+    for (const tile of block) {
+      const person = data.individuals.get(tile.id);
+      for (const famId of person?.fams ?? []) {
+        const fam = data.families.get(famId);
+        const childPull = centreOfAll(fam?.children ?? []);
+        if (childPull !== undefined) pulls.push(childPull);
+        const partner = fam?.husb === tile.id ? fam?.wife : fam?.husb;
+        if (partner && !block.some((b) => b.id === partner)) {
+          const partnerPull = centreOfAll([partner]);
+          if (partnerPull !== undefined) pulls.push(partnerPull);
+        }
+      }
+      for (const famId of person?.famc ?? []) {
+        const fam = data.families.get(famId);
+        const parentPull = centreOfAll([fam?.husb, fam?.wife]);
+        if (parentPull !== undefined) pulls.push(parentPull);
+        const siblingPull = centreOfAll(
+          (fam?.children ?? []).filter((c) => !block.some((b) => b.id === c)),
+        );
+        if (siblingPull !== undefined) pulls.push(siblingPull);
+      }
+    }
+    if (pulls.length === 0) return undefined;
+    return pulls.reduce((a, b) => a + b, 0) / pulls.length;
+  };
+
+  /** Moves a marriage group to the free spot nearest where its own lines
+   * want it. Where the build-up had to park a group in whatever space
+   * happened to be free - a sister with no children of her own, or parents
+   * whose only child was already placed by another branch - this is what
+   * brings it back next to the people it belongs with. */
+  const slideBlock = (block: TilePosition[]): void => {
+    const ideal = idealCentreOf(block);
+    if (ideal === undefined) return;
+    const width = blockWidth(block);
+    const row = block[0].generation;
+    const occupied: Extent[] = [];
+    for (const tile of tiles.values()) {
+      if (tile.generation !== row || block.includes(tile)) continue;
+      occupied.push({ min: tile.x, max: tile.x + tile.w });
+    }
+    const shift = fitBlock(ideal - width / 2, width, occupied) - block[0].x;
+    if (Math.abs(shift) < 0.5) return;
+    for (const tile of block) tile.x += shift;
   };
 
   /** Turns a marriage group back to front - which side of the couple each
@@ -1051,13 +1115,21 @@ function layoutOnce(
     for (const row of rowsPresent) {
       let blocks = rowBlocks(row);
       for (let i = 0; i < blocks.length; i++) {
+        if (tryMove(() => slideBlock(blocks[i]))) {
+          improved = true;
+          blocks = rowBlocks(row);
+        }
+      }
+      for (let i = 0; i < blocks.length; i++) {
         if (tryMove(() => reverseBlock(blocks[i]))) {
           improved = true;
           blocks = rowBlocks(row);
         }
       }
       for (let i = 0; i + 1 < blocks.length; i++) {
-        for (let j = i + 1; j < blocks.length; j++) {
+        // Only nearby groups are worth trying against each other; a group
+        // that belongs far away is brought over by the sliding above.
+        for (let j = i + 1; j < Math.min(blocks.length, i + 5); j++) {
           const left = blocks[i];
           const right = blocks[j];
           // Neighbours can always trade places on their own - between them
